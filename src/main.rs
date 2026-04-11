@@ -5,7 +5,7 @@ use std::process::Command;
 /// OpenCode Limit Reset - Cloudflare WARP tunnel reset tool
 #[derive(Parser, Debug)]
 #[command(name = "oplire")]
-#[command(version = "0.1.0")]
+#[command(version = "1.0.4")]
 #[command(about = "Reset OpenCode limit by managing Cloudflare WARP tunnel", long_about = None)]
 struct Cli {
     /// Enable verbose output
@@ -34,38 +34,13 @@ enum Commands {
     },
 
     /// Reset the WARP tunnel to refresh the connection
-    ///
-    /// Examples:
-    ///   oplire reset
-    ///   oplire reset --dry-run
-    ///   oplire reset --verbose
-    Reset {
-        /// Skip confirmation prompt
-        #[arg(short, long)]
-        force: bool,
-    },
+    Reset {},
 
     /// Install or configure WARP tunnel
-    ///
-    /// Examples:
-    ///   oplire install
-    ///   oplire install --dry-run
-    Install {
-        /// Reinstall even if already installed
-        #[arg(long)]
-        force: bool,
-    },
+    Install {},
 
     /// Stop/disable the WARP tunnel
-    ///
-    /// Examples:
-    ///   oplire stop
-    ///   oplire stop --force
-    Stop {
-        /// Skip confirmation prompt
-        #[arg(short, long)]
-        force: bool,
-    },
+    Stop {},
 
     /// Show information about oplire
     About {},
@@ -228,19 +203,10 @@ fn main() {
                 }
             }
         }
-        Commands::Reset { force } => {
+        Commands::Reset {} => {
             if !warp_installed {
                 println!("{} WARP is not installed", "[ERROR]".red());
                 println!("{} Run `oplire install` first", "Tip:".cyan().bold());
-                return;
-            }
-
-            if !*force && !cli.dry_run {
-                println!(
-                    "{} This will disconnect and reconnect your WARP tunnel",
-                    "[WARNING]".yellow()
-                );
-                println!("{} Use --force to skip this confirmation", "Tip:".cyan());
                 return;
             }
 
@@ -288,10 +254,9 @@ fn main() {
             println!("{}", "WARP tunnel reset complete!".green().bold());
             println!("{} Run `oplire status` to verify", "Tip:".cyan());
         }
-        Commands::Install { force } => {
-            if warp_installed && !*force {
+        Commands::Install {} => {
+            if warp_installed {
                 println!("{} WARP is already installed", "[INFO]".green());
-                println!("{} Use --force to reinstall", "Tip:".cyan());
                 return;
             }
 
@@ -344,19 +309,10 @@ fn main() {
                 println!("{}", "Installation complete!".green().bold());
             }
         }
-        Commands::Stop { force } => {
+        Commands::Stop {} => {
             if !warp_installed {
                 println!("{} WARP is not installed", "[ERROR]".red());
                 println!("{} Run `oplire install` first", "Tip:".cyan().bold());
-                return;
-            }
-
-            if !*force && !cli.dry_run {
-                println!(
-                    "{} This will stop and disable your WARP tunnel",
-                    "[WARNING]".yellow()
-                );
-                println!("{} Use --force to skip this confirmation", "Tip:".cyan());
                 return;
             }
 
@@ -395,7 +351,7 @@ _|"""""|_| """ |_|"""""|_|"""""|_|"""""|_|"""""|
                 .cyan()
             );
             println!();
-            println!("{} {}", "Version:".bold(), "0.1.0");
+            println!("{} {}", "Version:".bold(), "1.0.4");
             println!("{} {}", "Language:".bold(), "Rust");
             println!("{} {}", "Purpose:".bold(), "OpenCode rate limit reset");
             println!("{} {}", "Infrastructure:".bold(), "Cloudflare WARP");
@@ -417,6 +373,6 @@ _|"""""|_| """ |_|"""""|_|"""""|_|"""""|_|"""""|
 
     // Print version footer only if not in about command
     if !matches!(&cli.command, Commands::About {}) {
-        println!("\n{} v{}", "oplire".bold(), "0.1.0".dimmed());
+        println!("\n{} v{}", "oplire".bold(), "1.0.4".dimmed());
     }
 }

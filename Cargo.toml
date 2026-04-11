@@ -1,6 +1,6 @@
 [package]
 name = "oplire-reset"
-version = "0.1.0"
+version = "1.0.4"
 edition = "2021"
 description = "OpenCode Limit Reset - Cloudflare WARP tunnel reset tool"
 authors = ["Berke Oruc"]
