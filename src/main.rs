@@ -55,6 +55,9 @@ enum Commands {
         #[arg(long)]
         force: bool,
     },
+
+    /// Show information about oplire
+    About {},
 }
 
 /// Check if warp-cli is installed
@@ -329,6 +332,41 @@ fn main() {
             } else {
                 println!("{}", "Installation complete!".green().bold());
             }
+        }
+        Commands::About {} => {
+            println!(
+                "{}",
+                r#"
+  _    ____  ___  ___  __  __  ___  ____ 
+ / \  |  _ \|_ _|| _|/  \|  |/ _||  _ \
+/ _ \ | | | || | | |_| | |\/| | | | |_) |
+/ ___ \| |_| || | |  _  | |  | |_| |  _ /
+/_/   \_\_/ |___||_| |_| |_|  |_|___) |
+     OpenCode Limit Reset Tool              
+     by Berke Oruc                     
+"#
+                .bold()
+                .green()
+            );
+            println!();
+            println!("{} {}", "Version:".bold(), "0.1.0");
+            println!("{} {}", "Language:".bold(), "Rust");
+            println!(
+                "{} {}",
+                "Purpose:".bold(),
+                "OpenCode rate limit reset via Cloudflare WARP"
+            );
+            println!("{} {}", "Infrastructure:".bold(), "Cloudflare WARP Tunnel");
+            println!(
+                "{} {}",
+                "GitHub:".bold(),
+                "https://github.com/BerkeOruc/oplire"
+            );
+            println!();
+            println!("{}", "Usage:".bold());
+            println!("  oplire-reset status    # Check WARP status");
+            println!("  oplire-reset reset     # Reset tunnel for new IP");
+            println!("  oplire-reset install  # Install WARP");
         }
     }
 
