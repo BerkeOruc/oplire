@@ -5,11 +5,11 @@ edition = "2021"
 description = "OpenCode Limit Reset - Cloudflare WARP tunnel reset tool"
 authors = ["Berke Oruc"]
 license = "MIT"
-repository = "https://github.com/berkeoruc/oplire-reset"
-homepage = "https://github.com/berkeoruc/oplire-reset"
+repository = "https://github.com/berkeoruc/oplire"
+homepage = "https://github.com/berkeoruc/oplire"
 
 [[bin]]
-name = "oplire-reset"
+name = "oplire"
 path = "src/main.rs"
 
 [dependencies]

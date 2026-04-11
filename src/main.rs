@@ -4,7 +4,7 @@ use std::process::Command;
 
 /// OpenCode Limit Reset - Cloudflare WARP tunnel reset tool
 #[derive(Parser, Debug)]
-#[command(name = "oplire-reset")]
+#[command(name = "oplire")]
 #[command(version = "0.1.0")]
 #[command(about = "Reset OpenCode limit by managing Cloudflare WARP tunnel", long_about = None)]
 struct Cli {
@@ -25,8 +25,8 @@ enum Commands {
     /// Show current tunnel status and connection info
     ///
     /// Examples:
-    ///   oplire-reset status
-    ///   oplire-reset status --verbose
+    ///   oplire status
+    ///   oplire status --verbose
     Status {
         /// Show detailed JSON output
         #[arg(long)]
@@ -36,9 +36,9 @@ enum Commands {
     /// Reset the WARP tunnel to refresh the connection
     ///
     /// Examples:
-    ///   oplire-reset reset
-    ///   oplire-reset reset --dry-run
-    ///   oplire-reset reset --verbose
+    ///   oplire reset
+    ///   oplire reset --dry-run
+    ///   oplire reset --verbose
     Reset {
         /// Skip confirmation prompt
         #[arg(short, long)]
@@ -48,8 +48,8 @@ enum Commands {
     /// Install or configure WARP tunnel
     ///
     /// Examples:
-    ///   oplire-reset install
-    ///   oplire-reset install --dry-run
+    ///   oplire install
+    ///   oplire install --dry-run
     Install {
         /// Reinstall even if already installed
         #[arg(long)]
@@ -162,7 +162,7 @@ fn main() {
                     println!("{} {}", "Tunnel:".bold(), "Not connected".red());
                     println!("{} {}", "WARP:".bold(), "Not installed".red());
                     println!(
-                        "\n{} Run `oplire-reset install` to install WARP",
+                        "\n{} Run `oplire install` to install WARP",
                         "Tip:".cyan().bold()
                     );
                 }
@@ -220,7 +220,7 @@ fn main() {
         Commands::Reset { force } => {
             if !warp_installed {
                 println!("{} WARP is not installed", "[ERROR]".red());
-                println!("{} Run `oplire-reset install` first", "Tip:".cyan().bold());
+                println!("{} Run `oplire install` first", "Tip:".cyan().bold());
                 return;
             }
 
@@ -275,7 +275,7 @@ fn main() {
             let _ = run_command("warp-cli", &["connect"], cli.dry_run, cli.verbose);
 
             println!("{}", "WARP tunnel reset complete!".green().bold());
-            println!("{} Run `oplire-reset status` to verify", "Tip:".cyan());
+            println!("{} Run `oplire status` to verify", "Tip:".cyan());
         }
         Commands::Install { force } => {
             if warp_installed && !*force {
@@ -337,26 +337,27 @@ fn main() {
             println!(
                 "{}",
                 r#"
-  _    ____  ___  ___  __  __  ___  ____ 
- / \  |  _ \|_ _|| _|/  \|  |/ _||  _ \
-/ _ \ | | | || | | |_| | |\/| | | | |_) |
-/ ___ \| |_| || | |  _  | |  | |_| |  _ /
-/_/   \_\_/ |___||_| |_| |_|  |_|___) |
-     OpenCode Limit Reset Tool              
-     by Berke Oruc                     
+  ___      ___    _       ___     ___     ___   
+ / _ \    | _ \  | |     |_ _|   | _ \   | __|  
+| (_) |   |  _/  | |__    | |    |   /   | _|   
+ \___/   _|_|_   |____|  |___|   |_|_\   |___|  
+_|"""""|_| """ |_|"""""|_|"""""|_|"""""|_|"""""| 
+"`-0-0-'"`-0-0-'"`-0-0-'"`-0-0-'"`-0-0-'"`-0-0-'
 "#
                 .bold()
-                .green()
+                .cyan()
             );
             println!();
             println!("{} {}", "Version:".bold(), "0.1.0");
             println!("{} {}", "Language:".bold(), "Rust");
+            println!("{} {}", "Purpose:".bold(), "OpenCode rate limit reset");
+            println!("{} {}", "Infrastructure:".bold(), "Cloudflare WARP");
+            println!("{} {}", "Author:".bold(), "Berke Oruc");
             println!(
                 "{} {}",
-                "Purpose:".bold(),
-                "OpenCode rate limit reset via Cloudflare WARP"
+                "GitHub:".bold(),
+                "https://github.com/BerkeOruc/oplire"
             );
-            println!("{} {}", "Infrastructure:".bold(), "Cloudflare WARP Tunnel");
             println!(
                 "{} {}",
                 "GitHub:".bold(),
@@ -364,12 +365,12 @@ fn main() {
             );
             println!();
             println!("{}", "Usage:".bold());
-            println!("  oplire-reset status    # Check WARP status");
-            println!("  oplire-reset reset     # Reset tunnel for new IP");
-            println!("  oplire-reset install  # Install WARP");
+            println!("  oplire status    # Check WARP status");
+            println!("  oplire reset     # Reset tunnel for new IP");
+            println!("  oplire install  # Install WARP");
         }
     }
 
     // Print version header
-    println!("\n{} v{}", "oplire-reset".bold(), "0.1.0".dimmed());
+    println!("\n{} v{}", "oplire".bold(), "0.1.0".dimmed());
 }
