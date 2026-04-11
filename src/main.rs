@@ -56,6 +56,17 @@ enum Commands {
         force: bool,
     },
 
+    /// Stop/disable the WARP tunnel
+    ///
+    /// Examples:
+    ///   oplire stop
+    ///   oplire stop --force
+    Stop {
+        /// Skip confirmation prompt
+        #[arg(short, long)]
+        force: bool,
+    },
+
     /// Show information about oplire
     About {},
 }
@@ -333,6 +344,42 @@ fn main() {
                 println!("{}", "Installation complete!".green().bold());
             }
         }
+        Commands::Stop { force } => {
+            if !warp_installed {
+                println!("{} WARP is not installed", "[ERROR]".red());
+                println!("{} Run `oplire install` first", "Tip:".cyan().bold());
+                return;
+            }
+
+            if !*force && !cli.dry_run {
+                println!(
+                    "{} This will stop and disable your WARP tunnel",
+                    "[WARNING]".yellow()
+                );
+                println!("{} Use --force to skip this confirmation", "Tip:".cyan());
+                return;
+            }
+
+            println!("{}", "Stopping WARP tunnel...".bold());
+
+            if cli.verbose {
+                eprintln!("{} Step 1: Disconnecting...", "[DEBUG]".cyan());
+            }
+            let _ = run_command("warp-cli", &["disconnect"], cli.dry_run, cli.verbose);
+
+            if cli.verbose {
+                eprintln!("{} Step 2: Stopping warp-svc...", "[DEBUG]".cyan());
+            }
+            let _ = run_sudo_command("systemctl stop warp-svc", cli.dry_run, cli.verbose);
+
+            if cli.verbose {
+                eprintln!("{} Step 3: Disabling warp-svc...", "[DEBUG]".cyan());
+            }
+            let _ = run_sudo_command("systemctl disable warp-svc", cli.dry_run, cli.verbose);
+
+            println!("{}", "WARP tunnel stopped!".green().bold());
+            println!("{} Run `oplire reset` to restart", "Tip:".cyan());
+        }
         Commands::About {} => {
             println!(
                 "{}",
@@ -361,8 +408,9 @@ _|"""""|_| """ |_|"""""|_|"""""|_|"""""|_|"""""|
             println!();
             println!("{}", "Usage:".bold());
             println!("  oplire about   # Show this info");
-            println!("  oplire status # Check WARP status");
-            println!("  oplire reset  # Reset tunnel for new IP");
+            println!("  oplire status  # Check WARP status");
+            println!("  oplire reset   # Reset tunnel for new IP");
+            println!("  oplire stop    # Stop WARP tunnel");
             println!("  oplire install # Install WARP");
         }
     }
