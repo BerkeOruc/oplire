@@ -351,7 +351,7 @@ _|"""""|_| """ |_|"""""|_|"""""|_|"""""|_|"""""|
                 .cyan()
             );
             println!();
-            println!("{} {}", "Version:".bold(), "1.0.4");
+            println!("{} {}", "Version:".bold(), "1.0.5");
             println!("{} {}", "Language:".bold(), "Rust");
             println!("{} {}", "Purpose:".bold(), "OpenCode rate limit reset");
             println!("{} {}", "Infrastructure:".bold(), "Cloudflare WARP");
@@ -373,6 +373,6 @@ _|"""""|_| """ |_|"""""|_|"""""|_|"""""|_|"""""|
 
     // Print version footer only if not in about command
     if !matches!(&cli.command, Commands::About {}) {
-        println!("\n{} v{}", "oplire".bold(), "1.0.4".dimmed());
+        println!("\n{} v{}", "oplire".bold(), "1.0.5".dimmed());
     }
 }

@@ -11,7 +11,7 @@ _|"""""|_| """ |_|"""""|_|"""""|_|"""""|_|"""""|
 
 [![Rust](https://img.shields.io/badge/rust-1.75%2B-orange?style=flat-square&logo=rust)](https://www.rust-lang.org)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](LICENSE)
-[![AUR](https://img.shields.io/badge/AUR-1.0.4-blue?style=flat-square)](https://aur.archlinux.org/packages/oplire)
+[![AUR](https://img.shields.io/badge/AUR-1.0.5-blue?style=flat-square)](https://aur.archlinux.org/packages/oplire)
 
 ## What is oplire?
 
@@ -98,7 +98,7 @@ oplire install
 ## About
 
 ```
-Version: 1.0.4
+Version: 1.0.5
 Language: Rust
 Purpose: OpenCode rate limit reset
 Infrastructure: Cloudflare WARP
