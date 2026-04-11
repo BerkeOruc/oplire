@@ -358,19 +358,17 @@ _|"""""|_| """ |_|"""""|_|"""""|_|"""""|_|"""""|
                 "GitHub:".bold(),
                 "https://github.com/BerkeOruc/oplire"
             );
-            println!(
-                "{} {}",
-                "GitHub:".bold(),
-                "https://github.com/BerkeOruc/oplire"
-            );
             println!();
             println!("{}", "Usage:".bold());
-            println!("  oplire status    # Check WARP status");
-            println!("  oplire reset     # Reset tunnel for new IP");
-            println!("  oplire install  # Install WARP");
+            println!("  oplire about   # Show this info");
+            println!("  oplire status # Check WARP status");
+            println!("  oplire reset  # Reset tunnel for new IP");
+            println!("  oplire install # Install WARP");
         }
     }
 
-    // Print version header
-    println!("\n{} v{}", "oplire".bold(), "0.1.0".dimmed());
+    // Print version footer only if not in about command
+    if !matches!(&cli.command, Commands::About {}) {
+        println!("\n{} v{}", "oplire".bold(), "0.1.0".dimmed());
+    }
 }
