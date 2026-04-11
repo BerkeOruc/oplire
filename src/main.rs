@@ -5,7 +5,7 @@ use std::process::Command;
 /// OpenCode Limit Reset - Cloudflare WARP tunnel reset tool
 #[derive(Parser, Debug)]
 #[command(name = "oplire")]
-#[command(version = "1.0.4")]
+#[command(version = "1.0.5")]
 #[command(about = "Reset OpenCode limit by managing Cloudflare WARP tunnel", long_about = None)]
 struct Cli {
     /// Enable verbose output
