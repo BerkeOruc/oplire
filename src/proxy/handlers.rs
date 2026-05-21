@@ -11,7 +11,7 @@ use reqwest::Client;
 use serde_json::Value;
 use std::sync::Arc;
 use tokio::sync::Mutex;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use crate::config::ProxyConfig;
 use crate::transform::{anthropic_to_opencode_request, opencode_stream_to_anthropic, opencode_response_to_anthropic};
@@ -23,9 +23,107 @@ pub struct ProxyState {
     pub warp_resolver: WarpResolver,
 }
 
-pub async fn handle_models(State(_state): State<Arc<Mutex<ProxyState>>>) -> impl IntoResponse {
-    let response = ProxyConfig::models_response();
-    (StatusCode::OK, Json(response))
+pub async fn handle_models(State(state): State<Arc<Mutex<ProxyState>>>) -> impl IntoResponse {
+    let state_guard = state.lock().await;
+    let base_url = state_guard.config.opencode_base_url.clone();
+    let api_key = state_guard.config.opencode_api_key.clone();
+    drop(state_guard);
+
+    let models_url = format!("{}/v1/models", base_url.trim_end_matches('/'));
+
+    let mut request = reqwest::Client::new()
+        .get(&models_url)
+        .header("Accept", "application/json");
+
+    if let Some(key) = &api_key {
+        request = request.header("Authorization", format!("Bearer {}", key));
+    }
+
+    match request.send().await {
+        Ok(resp) if resp.status().is_success() => {
+            match resp.json::<Value>().await {
+                Ok(upstream_models) => {
+                    let transformed = transform_models_to_anthropic(&upstream_models);
+                    (StatusCode::OK, Json(transformed))
+                }
+                Err(e) => {
+                    error!("Failed to parse models response: {}", e);
+                    (StatusCode::OK, Json(ProxyConfig::models_response()))
+                }
+            }
+        }
+        Ok(resp) => {
+            warn!("Upstream /v1/models returned status: {}", resp.status());
+            (StatusCode::OK, Json(ProxyConfig::models_response()))
+        }
+        Err(e) => {
+            warn!("Failed to fetch models from upstream: {}", e);
+            (StatusCode::OK, Json(ProxyConfig::models_response()))
+        }
+    }
+}
+
+fn transform_models_to_anthropic(upstream: &Value) -> Value {
+    let data = upstream.get("data").and_then(|v| v.as_array());
+
+    let models: Vec<Value> = match data {
+        Some(models_array) => models_array
+            .iter()
+            .map(|m| {
+                let id = m.get("id").and_then(|v| v.as_str()).unwrap_or("unknown");
+                let display_name = match m.get("name").and_then(|v| v.as_str()) {
+                    Some(name) => name.to_string(),
+                    None => id.replace('-', " ")
+                        .split_whitespace()
+                        .map(|w| {
+                            let mut chars = w.chars();
+                            match chars.next() {
+                                None => String::new(),
+                                Some(c) => {
+                                    let upper = c.to_uppercase().collect::<String>();
+                                    format!("{}{}", upper, chars.as_str())
+                                }
+                            }
+                        })
+                        .collect::<Vec<_>>()
+                        .join(" "),
+                };
+
+                let mut model = serde_json::Map::new();
+                model.insert("id".to_string(), Value::String(id.to_string()));
+                model.insert("type".to_string(), Value::String("model".to_string()));
+                model.insert("display_name".to_string(), Value::String(display_name));
+
+                if let Some(created) = m.get("created") {
+                    model.insert("created".to_string(), created.clone());
+                }
+                if let Some(owned_by) = m.get("owned_by") {
+                    model.insert("owned_by".to_string(), owned_by.clone());
+                }
+
+                Value::Object(model)
+            })
+            .collect(),
+        None => {
+            ProxyConfig::free_models()
+                .iter()
+                .map(|m| {
+                    serde_json::json!({
+                        "id": m.id,
+                        "type": "model",
+                        "display_name": m.display_name
+                    })
+                })
+                .collect()
+        }
+    };
+
+    serde_json::json!({
+        "data": models,
+        "has_more": false,
+        "first_id": models.first().and_then(|m| m.get("id").and_then(|v| v.as_str())).unwrap_or(""),
+        "last_id": models.last().and_then(|m| m.get("id").and_then(|v| v.as_str())).unwrap_or("")
+    })
 }
 
 pub async fn handle_messages(
