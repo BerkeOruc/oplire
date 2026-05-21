@@ -17,3 +17,5 @@ Thumbs.db
 
 # Build artifacts
 *.profraw
+oplire.exe
+*.tar.gz
