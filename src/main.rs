@@ -5,7 +5,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 
-const VERSION: &str = "2.1.0";
+const VERSION: &str = "2.2.0";
 
 #[derive(Parser, Debug)]
 #[command(name = "oplire")]
@@ -30,7 +30,10 @@ enum Commands {
     },
     Reset {},
     QuickReset {},
-    Install {},
+    Install {
+        #[command(subcommand)]
+        target: InstallTarget,
+    },
     Stop {},
     About {},
     Proxy {
@@ -74,6 +77,19 @@ enum Commands {
         action: ConfigAction,
     },
     Doctor {},
+    Setup {},
+}
+
+#[derive(Subcommand, Debug)]
+enum InstallTarget {
+    /// Install Cloudflare WARP
+    Warp {},
+    /// Install OpenCode desktop app
+    Opencode {},
+    /// Install Claude Code CLI
+    ClaudeCode {},
+    /// Install all: WARP + OpenCode + Claude Code
+    All {},
 }
 
 #[derive(Subcommand, Debug)]
@@ -91,6 +107,8 @@ enum ConnectTarget {
         warp_delay: u64,
         #[arg(long)]
         model: Option<String>,
+        #[arg(long)]
+        system_prompt: Option<String>,
         #[arg(last = true)]
         claude_args: Vec<String>,
     },
@@ -171,6 +189,11 @@ fn check_claude_installed() -> bool {
     Command::new("claude").arg("--version").output().is_ok()
 }
 
+fn check_opencode_installed() -> bool {
+    Command::new("opencode").arg("--version").output().is_ok()
+        || Command::new("opencode").arg("--help").output().is_ok()
+}
+
 fn check_opencode_running(base_url: &str) -> bool {
     let url = format!("{}/v1/models", base_url.trim_end_matches('/'));
     reqwest::blocking::Client::new()
@@ -179,6 +202,10 @@ fn check_opencode_running(base_url: &str) -> bool {
         .send()
         .map(|r| r.status().is_success())
         .unwrap_or(false)
+}
+
+fn check_node_installed() -> bool {
+    Command::new("node").arg("--version").output().is_ok()
 }
 
 fn run_command(cmd: &str, args: &[&str], dry_run: bool, verbose: bool) -> Result<String, String> {
@@ -249,6 +276,19 @@ fn run_sudo_command(cmd: &str, dry_run: bool, verbose: bool) -> Result<String, S
     }
 }
 
+fn run_interactive(cmd: &str, args: &[&str]) -> Result<(), String> {
+    let status = Command::new(cmd)
+        .args(args)
+        .status()
+        .map_err(|e| e.to_string())?;
+
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("{} exited with {}", cmd, status))
+    }
+}
+
 fn print_banner() {
     println!(
         "{}",
@@ -263,6 +303,22 @@ _|"""""|_| """ |_|"""""|_|"""""|_|"""""|_|"""""|
         .bold()
         .cyan()
     );
+}
+
+fn print_step(num: usize, text: &str) {
+    println!("  {} {}", format!("[{}/5]", num).dimmed(), text.bold());
+}
+
+fn print_success(text: &str) {
+    println!("  {} {}", "✓".green().bold(), text);
+}
+
+fn print_fail(text: &str) {
+    println!("  {} {}", "✗".red().bold(), text);
+}
+
+fn print_info_formatted(label: &str, desc: &str) {
+    println!("  {} {} — {}", "→".cyan(), label.bold(), desc.dimmed());
 }
 
 fn main() {
@@ -282,6 +338,235 @@ fn main() {
     let warp_installed = check_warp_installed();
 
     match &cli.command {
+        Commands::Setup {} => {
+            print_banner();
+            println!("{}", "Welcome to oplire Setup Wizard".bold().green());
+            println!();
+            println!("{}", "This will check and install all required components.".dimmed());
+            println!();
+
+            let mut steps_needed = Vec::new();
+
+            if !check_node_installed() {
+                steps_needed.push(("Node.js", "npm install -g npm", "Required for Claude Code and OpenCode"));
+            }
+            if !warp_installed {
+                steps_needed.push(("Cloudflare WARP", "oplire install warp", "Required for rate limit reset"));
+            }
+            if !check_opencode_installed() {
+                steps_needed.push(("OpenCode", "oplire install opencode", "AI coding assistant backend"));
+            }
+            if !check_claude_installed() {
+                steps_needed.push(("Claude Code", "oplire install claudecode", "AI coding assistant CLI"));
+            }
+
+            if steps_needed.is_empty() {
+                println!("{}", "Everything is already installed!".green().bold());
+                println!();
+                println!("{} Run to get started:", "Tip:".cyan().bold());
+                println!("  {}", "oplire connect claude-code".bold().yellow());
+                return;
+            }
+
+            println!("{}", "The following components need to be installed:".bold());
+            println!();
+            for (name, _, desc) in &steps_needed {
+                print_info_formatted(name, desc);
+            }
+            println!();
+
+            for (i, (name, _cmd, _)) in steps_needed.iter().enumerate() {
+                println!();
+                print_step(i + 1, &format!("Installing {}...", name));
+
+                match *name {
+                    "Node.js" => {
+                        println!("  {} Node.js must be installed manually", "ℹ".yellow());
+                        println!("  {}", "curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash".dimmed());
+                        println!("  {}", "Then restart your terminal".dimmed());
+                    }
+                    "Cloudflare WARP" => {
+                        let _ = run_interactive("oplire", &["install", "warp"]);
+                    }
+                    "OpenCode" => {
+                        let _ = run_interactive("oplire", &["install", "opencode"]);
+                    }
+                    "Claude Code" => {
+                        let _ = run_interactive("oplire", &["install", "claude-code"]);
+                    }
+                    _ => {}
+                }
+            }
+
+            println!();
+            println!("{}", "Setup complete!".green().bold());
+                println!();
+                println!("{}", "Next steps:".bold());
+                println!("  1. {}", "oplire doctor".bold().yellow());
+                println!("  2. {}", "oplire connect claude-code".bold().yellow());
+        }
+
+        Commands::Install { target } => match target {
+            InstallTarget::Warp {} => {
+                print_banner();
+                println!("{}", "Installing Cloudflare WARP".bold().green());
+                println!();
+
+                if warp_installed {
+                    println!("{} WARP is already installed", "[INFO]".green());
+                    println!("{} Run `oplire reset` to refresh your IP", "Tip:".cyan());
+                    return;
+                }
+
+                if let Ok(output) = Command::new("sh").arg("-c").arg("cat /etc/os-release").output() {
+                    let os_release = String::from_utf8_lossy(&output.stdout);
+
+                    if os_release.contains("arch") || os_release.contains("manjaro") {
+                        print_step(1, "Installing cloudflare-warp-bin via yay...");
+                        match run_interactive("yay", &["-S", "--noconfirm", "cloudflare-warp-bin"]) {
+                            Ok(()) => print_success("WARP installed"),
+                            Err(e) => print_fail(&format!("Installation failed: {}", e)),
+                        }
+                    } else if os_release.contains("ubuntu") || os_release.contains("debian") {
+                        print_step(1, "Adding Cloudflare repository...");
+                        let _ = run_sudo_command(
+                            "curl -fsSL https://pkg.cloudflare.com/pubkey.gpg | gpg --yes -o /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg 2>/dev/null || true",
+                            cli.dry_run, cli.verbose,
+                        );
+                        let _ = run_sudo_command(
+                            "echo 'deb [signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] https://pkg.cloudflare.com/ any main' > /etc/apt/sources.list.d/cloudflare-warp.list",
+                            cli.dry_run, cli.verbose,
+                        );
+                        print_step(2, "Installing cloudflare-warp...");
+                        let _ = run_sudo_command("apt update -qq && apt install -y -qq cloudflare-warp", cli.dry_run, cli.verbose);
+                    } else if os_release.contains("fedora") {
+                        print_step(1, "Installing cloudflare-warp via dnf...");
+                        let _ = run_sudo_command("dnf install -y cloudflare-warp", cli.dry_run, cli.verbose);
+                    } else {
+                        println!("{} Unsupported OS. Install manually:", "Warning:".yellow());
+                        println!("  {}", "https://developers.cloudflare.com/warp-client/get-started/linux/".dimmed());
+                        return;
+                    }
+                }
+
+                if check_warp_installed() {
+                    println!();
+                    println!("{}", "Next steps:".bold());
+                    println!("  1. {}", "warp-cli connect".bold().yellow());
+                    println!("  2. {}", "warp-cli status".bold().yellow());
+                    println!("  3. {}", "oplire reset".bold().yellow());
+                } else {
+                    println!();
+                    print_fail("WARP installation may have failed. Check output above.");
+                }
+            }
+
+            InstallTarget::Opencode {} => {
+                print_banner();
+                println!("{}", "Installing OpenCode".bold().green());
+                println!();
+
+                if check_opencode_installed() {
+                    println!("{} OpenCode is already installed", "[INFO]".green());
+                    return;
+                }
+
+                if !check_node_installed() {
+                    println!("{} Node.js is required but not found", "[ERROR]".red());
+                    println!("{} Install Node.js first: https://nodejs.org/", "Fix:".cyan());
+                    std::process::exit(1);
+                }
+
+                print_step(1, "Installing OpenCode via npm...");
+                match run_interactive("npm", &["install", "-g", "opencode-ai"]) {
+                    Ok(()) => {
+                        print_success("OpenCode installed");
+                        println!();
+                        println!("{}", "Next steps:".bold());
+                        println!("  1. {}", "opencode".bold().yellow());
+                        println!("  2. {}", "oplire doctor".bold().yellow());
+                        println!("  3. {}", "oplire connect claude-code".bold().yellow());
+                    }
+                    Err(e) => {
+                        print_fail(&format!("Installation failed: {}", e));
+                        println!();
+                        println!("{} Try manually:", "Fix:".cyan());
+                        println!("  {}", "npm install -g opencode-ai".bold().yellow());
+                    }
+                }
+            }
+
+            InstallTarget::ClaudeCode {} => {
+                print_banner();
+                println!("{}", "Installing Claude Code".bold().green());
+                println!();
+
+                if check_claude_installed() {
+                    let version = run_command("claude", &["--version"], false, false)
+                        .map(|v| v.trim().to_string())
+                        .unwrap_or_else(|_| "unknown".to_string());
+                    println!("{} Claude Code is already installed ({})", "[INFO]".green(), version.dimmed());
+                    return;
+                }
+
+                if !check_node_installed() {
+                    println!("{} Node.js is required but not found", "[ERROR]".red());
+                    println!("{} Install Node.js first: https://nodejs.org/", "Fix:".cyan());
+                    std::process::exit(1);
+                }
+
+                print_step(1, "Installing Claude Code via npm...");
+                match run_interactive("npm", &["install", "-g", "@anthropic-ai/claude-code"]) {
+                    Ok(()) => {
+                        print_success("Claude Code installed");
+                        println!();
+                        println!("{}", "Next steps:".bold());
+                        println!("  1. {}", "claude --version".bold().yellow());
+                        println!("  2. {}", "oplire connect claude-code".bold().yellow());
+                    }
+                    Err(e) => {
+                        print_fail(&format!("Installation failed: {}", e));
+                        println!();
+                        println!("{} Try manually:", "Fix:".cyan());
+                        println!("  {}", "npm install -g @anthropic-ai/claude-code".bold().yellow());
+                    }
+                }
+            }
+
+            InstallTarget::All {} => {
+                print_banner();
+                println!("{}", "Installing All Components".bold().green());
+                println!();
+
+                print_step(1, "Checking Cloudflare WARP...");
+                if check_warp_installed() {
+                    print_success("WARP already installed");
+                } else {
+                    let _ = run_interactive("oplire", &["install", "warp"]);
+                }
+
+                print_step(2, "Checking OpenCode...");
+                if check_opencode_installed() {
+                    print_success("OpenCode already installed");
+                } else {
+                    let _ = run_interactive("oplire", &["install", "opencode"]);
+                }
+
+                print_step(3, "Checking Claude Code...");
+                if check_claude_installed() {
+                    print_success("Claude Code already installed");
+                } else {
+                    let _ = run_interactive("oplire", &["install", "claude-code"]);
+                }
+
+                println!();
+                println!("{}", "All components installed!".green().bold());
+                println!();
+                println!("{}", "Run to get started:".bold());
+                println!("  {}", "oplire connect claude-code".bold().yellow());
+            }
+        },
+
         Commands::Connect {
             target: ConnectTarget::ClaudeCode {
                 listen,
@@ -290,6 +575,7 @@ fn main() {
                 max_retries,
                 warp_delay,
                 model,
+                system_prompt,
                 claude_args,
             },
         } => {
@@ -299,7 +585,7 @@ fn main() {
 
             if !check_claude_installed() {
                 eprintln!("{} Claude Code not found in PATH", "[ERROR]".red());
-                eprintln!("{} Install: npm install -g @anthropic-ai/claude-code", "Fix:".cyan());
+                eprintln!("{} Install: {}", "Fix:".cyan(), "oplire install claude-code".bold().yellow());
                 std::process::exit(1);
             }
 
@@ -316,6 +602,9 @@ fn main() {
             println!("{} Auto-reset: {} (attempts: {})", "→".green(), "enabled".green().bold(), max_retries.to_string().bold());
             if let Some(m) = model {
                 println!("{} Model:     {}", "→".green(), m.bold());
+            }
+            if let Some(sp) = system_prompt {
+                println!("{} System:    {} chars", "→".green(), sp.len().to_string().bold());
             }
             println!();
 
@@ -342,6 +631,10 @@ fn main() {
 
             if let Some(m) = model {
                 cmd.env("ANTHROPIC_MODEL", m);
+            }
+
+            if let Some(sp) = system_prompt {
+                cmd.env("CLAUDE_CODE_SYSTEM_PROMPT", sp);
             }
 
             if !claude_args.is_empty() {
@@ -434,68 +727,78 @@ fn main() {
             println!();
 
             let mut all_ok = true;
+            let mut checks = Vec::new();
 
-            print!("{} WARP CLI: ", "→".cyan());
             if warp_installed {
-                println!("{}", "installed".green().bold());
+                checks.push(("WARP CLI", "installed".to_string(), true));
             } else {
-                println!("{}", "NOT FOUND".red().bold());
+                checks.push(("WARP CLI", "NOT FOUND".to_string(), false));
                 all_ok = false;
             }
 
-            print!("{} Claude Code: ", "→".cyan());
             if check_claude_installed() {
                 let version = run_command("claude", &["--version"], false, false)
                     .map(|v| v.trim().to_string())
                     .unwrap_or_else(|_| "unknown".to_string());
-                println!("{} ({})", "installed".green().bold(), version.dimmed());
+                checks.push(("Claude Code", format!("installed ({})", version), true));
             } else {
-                println!("{}", "NOT FOUND".red().bold());
+                checks.push(("Claude Code", "NOT FOUND".to_string(), false));
                 all_ok = false;
             }
 
-            print!("{} OpenCode Zen: ", "→".cyan());
+            if check_opencode_installed() {
+                checks.push(("OpenCode", "installed".to_string(), true));
+            } else {
+                checks.push(("OpenCode", "NOT FOUND".to_string(), false));
+                all_ok = false;
+            }
+
             let config = load_config();
             let upstream = config.upstream.clone();
             if check_opencode_running(&upstream) {
-                println!("{} ({})", "running".green().bold(), upstream.dimmed());
+                checks.push(("OpenCode Zen", format!("running ({})", upstream), true));
             } else {
-                println!("{} ({})", "NOT REACHABLE".red().bold(), upstream.dimmed());
+                checks.push(("OpenCode Zen", format!("NOT REACHABLE ({})", upstream), false));
                 all_ok = false;
             }
 
-            print!("{} Config file: ", "→".cyan());
             let cfg_path = config_path();
             if cfg_path.exists() {
-                println!("{} ({})", "found".green().bold(), cfg_path.display().to_string().dimmed());
+                checks.push(("Config file", format!("found ({})", cfg_path.display()), true));
             } else {
-                println!("{} (using defaults)", "not found".yellow().bold());
+                checks.push(("Config file", "using defaults".to_string(), true));
             }
 
-            print!("{} Port 8080: ", "→".cyan());
             if std::net::TcpListener::bind("127.0.0.1:8080").is_ok() {
-                println!("{}", "available".green().bold());
+                checks.push(("Port 8080", "available".to_string(), true));
             } else {
-                println!("{}", "IN USE".red().bold());
+                checks.push(("Port 8080", "IN USE".to_string(), false));
                 all_ok = false;
+            }
+
+            for (name, status, ok) in &checks {
+                let status_str = if *ok {
+                    status.green().bold()
+                } else {
+                    status.red().bold()
+                };
+                println!("{} {}: {}", "→".cyan(), name.bold(), status_str);
             }
 
             println!();
             if all_ok {
                 println!("{}", "All checks passed!".green().bold());
             } else {
-                println!("{}", "Some checks failed. See above for details.".yellow().bold());
+                println!("{}", "Some checks failed.".yellow().bold());
                 println!();
-                println!("{} Run `oplire install` to install WARP", "Fix:".cyan());
-                println!("{} Install Claude Code: npm install -g @anthropic-ai/claude-code", "Fix:".cyan());
-                println!("{} Ensure OpenCode Zen is running on {}", "Fix:".cyan(), upstream.bold());
+                println!("{} Run `oplire setup` for guided installation", "Fix:".cyan());
             }
         }
 
         Commands::QuickReset {} => {
             if !warp_installed {
                 println!("{} WARP is not installed", "[ERROR]".red());
-                println!("{} Run `oplire install` first", "Tip:".cyan().bold());
+                println!("{} Run `oplire install warp` first", "Tip:".cyan().bold());
                 return;
             }
 
@@ -627,7 +930,7 @@ fn main() {
                     println!("{} {}", "Tunnel:".bold(), "Not connected".red());
                     println!("{} {}", "WARP:".bold(), "Not installed".red());
                     println!(
-                        "\n{} Run `oplire install` to install WARP",
+                        "\n{} Run `oplire install warp` to install WARP",
                         "Tip:".cyan().bold()
                     );
                 }
@@ -686,7 +989,7 @@ fn main() {
         Commands::Reset {} => {
             if !warp_installed {
                 println!("{} WARP is not installed", "[ERROR]".red());
-                println!("{} Run `oplire install` first", "Tip:".cyan().bold());
+                println!("{} Run `oplire install warp` first", "Tip:".cyan().bold());
                 return;
             }
 
@@ -735,66 +1038,10 @@ fn main() {
             println!("{} Run `oplire status` to verify", "Tip:".cyan());
         }
 
-        Commands::Install {} => {
-            if warp_installed {
-                println!("{} WARP is already installed", "[INFO]".green());
-                return;
-            }
-
-            println!("{}", "Installing WARP tunnel...".bold());
-            println!();
-            println!("{}", "=== Linux Installation ===".bold());
-            println!();
-            println!("1. Add Cloudflare WARP repository:");
-            println!("   curl -fsSL https://pkg.cloudflare.com/pubkey.gpg | sudo gpg --yes -o /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg");
-            println!("   echo 'deb [signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] https://pkg.cloudflare.com/ any main' | sudo tee /etc/apt/sources.list.d/cloudflare-warp.list");
-            println!();
-            println!("2. Update and install:");
-            println!("   sudo apt update");
-            println!("   sudo apt install cloudflare-warp");
-            println!();
-            println!("3. Connect to WARP:");
-            println!("   warp-cli connect");
-            println!("   warp-cli status");
-            println!();
-            println!("{}", "=== macOS Installation ===".bold());
-            println!();
-            println!("1. Download the installer:");
-            println!("   https://1111-releases.cloudflare.com/latest/mac/WARP.pkg");
-            println!();
-            println!("2. Run the installer package");
-            println!();
-            println!("3. Connect via terminal:");
-            println!("   /Applications/Cloudflare\\ WARP.app/Contents/Resources/warp-cli connect");
-            println!("   /Applications/Cloudflare\\ WARP.app/Contents/Resources/warp-cli status");
-            println!();
-            println!("{}", "=== Windows Installation ===".bold());
-            println!();
-            println!("1. Download the installer:");
-            println!(
-                "   https://1111-releases.cloudflare.com/latest/Windows Cloudflare WARP Setup.exe"
-            );
-            println!();
-            println!("2. Run the installer as Administrator");
-            println!();
-            println!("3. Connect via PowerShell:");
-            println!("   & 'C:\\Program Files (x86)\\Cloudflare\\Cloudflare WARP.exe' connect");
-            println!();
-
-            if cli.dry_run {
-                println!(
-                    "{} Installation instructions printed above",
-                    "[DRY-RUN]".cyan()
-                );
-            } else {
-                println!("{}", "Installation complete!".green().bold());
-            }
-        }
-
         Commands::Stop {} => {
             if !warp_installed {
                 println!("{} WARP is not installed", "[ERROR]".red());
-                println!("{} Run `oplire install` first", "Tip:".cyan().bold());
+                println!("{} Run `oplire install warp` first", "Tip:".cyan().bold());
                 return;
             }
 
@@ -832,24 +1079,34 @@ fn main() {
                 "GitHub:".bold()
             );
             println!();
-            println!("{}", "Commands:".bold());
-            println!("  oplire about               # Show this info");
+            println!("{}", "Installation:".bold());
+            println!("  oplire install warp          # Install Cloudflare WARP");
+            println!("  oplire install opencode      # Install OpenCode");
+            println!("  oplire install claude-code   # Install Claude Code CLI");
+            println!("  oplire install all           # Install everything");
+            println!("  oplire setup                 # Guided setup wizard");
+            println!();
+            println!("{}", "WARP Management:".bold());
             println!("  oplire status              # Check WARP status");
             println!("  oplire reset               # Full WARP tunnel reset");
             println!("  oplire quick-reset         # Fast WARP IP rotation");
             println!("  oplire stop                # Stop WARP tunnel");
-            println!("  oplire install             # Install WARP");
+            println!();
+            println!("{}", "Proxy & Claude Code:".bold());
             println!("  oplire proxy               # Start reverse proxy");
             println!("  oplire connect claude-code # Proxy + launch Claude Code");
-            println!("  oplire watch               # Monitor OpenCode, auto-reset");
             println!("  oplire daemon              # Background proxy service");
+            println!("  oplire watch               # Monitor OpenCode, auto-reset");
+            println!();
+            println!("{}", "Configuration:".bold());
             println!("  oplire config show         # Show current config");
             println!("  oplire config set          # Save config");
+            println!("  oplire config reset        # Reset to defaults");
             println!("  oplire doctor              # Diagnose system setup");
         }
     }
 
-    if !matches!(&cli.command, Commands::About {} | Commands::Proxy { .. } | Commands::Connect { .. } | Commands::Daemon { .. } | Commands::Watch { .. } | Commands::Doctor {} | Commands::Config { .. }) {
+    if !matches!(&cli.command, Commands::About {} | Commands::Proxy { .. } | Commands::Connect { .. } | Commands::Daemon { .. } | Commands::Watch { .. } | Commands::Doctor {} | Commands::Config { .. } | Commands::Setup {} | Commands::Install { .. }) {
         println!("\n{} v{}", "oplire".bold(), VERSION.dimmed());
     }
 }
