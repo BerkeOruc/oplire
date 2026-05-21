@@ -607,6 +607,11 @@ fn main() {
                 println!("{} System:    {} chars", "→".green(), sp.len().to_string().bold());
             }
             println!();
+            println!("{}", "Note:".yellow().bold());
+            println!("  Claude Code'un /model picker'ı hardcoded Anthropic modellerini gösterir.");
+            println!("  Gerçek model seçimini --model flag'i ile yapabilirsiniz:");
+            println!("  {}", "oplire connect claude-code --model glm-4.7-free".bold().yellow());
+            println!();
 
             println!("{}", "Starting proxy server...".dimmed());
 

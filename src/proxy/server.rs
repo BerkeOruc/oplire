@@ -1,4 +1,5 @@
 use axum::{
+    middleware::{self, Next},
     routing::{get, post},
     Router,
 };
@@ -8,8 +9,20 @@ use tokio::sync::Mutex;
 use tracing::info;
 
 use crate::config::ProxyConfig;
-use crate::proxy::handlers::{handle_messages, handle_models, ProxyState};
+use crate::proxy::handlers::{handle_messages, handle_model_detail, handle_models, ProxyState};
 use crate::warp::WarpResolver;
+
+async fn log_requests(
+    request: axum::http::Request<axum::body::Body>,
+    next: Next,
+) -> axum::response::Response {
+    let method = request.method().clone();
+    let uri = request.uri().clone();
+    info!("→ {} {}", method, uri);
+    let response = next.run(request).await;
+    info!("← {} {} {}", method, uri, response.status());
+    response
+}
 
 pub async fn start_proxy_server(config: ProxyConfig) -> anyhow::Result<()> {
     let client = reqwest::Client::builder()
@@ -27,8 +40,11 @@ pub async fn start_proxy_server(config: ProxyConfig) -> anyhow::Result<()> {
 
     let app = Router::new()
         .route("/v1/models", get(handle_models))
+        .route("/v1/models/{model_id}", get(handle_model_detail))
         .route("/v1/messages", post(handle_messages))
+        .route("/v1/chat/completions", post(handle_messages))
         .route("/health", get(|| async { "OK" }))
+        .layer(middleware::from_fn(log_requests))
         .with_state(state);
 
     let addr: SocketAddr = config

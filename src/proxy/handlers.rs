@@ -69,8 +69,12 @@ fn transform_models_to_anthropic(upstream: &Value) -> Value {
     let models: Vec<Value> = match data {
         Some(models_array) => models_array
             .iter()
-            .map(|m| {
-                let id = m.get("id").and_then(|v| v.as_str()).unwrap_or("unknown");
+            .filter_map(|m| {
+                let id = m.get("id").and_then(|v| v.as_str()).unwrap_or("");
+                if id.is_empty() {
+                    return None;
+                }
+
                 let display_name = match m.get("name").and_then(|v| v.as_str()) {
                     Some(name) => name.to_string(),
                     None => id.replace('-', " ")
@@ -89,10 +93,29 @@ fn transform_models_to_anthropic(upstream: &Value) -> Value {
                         .join(" "),
                 };
 
+                let context_window = m
+                    .get("context_window")
+                    .and_then(|v| v.as_u64())
+                    .or_else(|| m.get("max_tokens").and_then(|v| v.as_u64()))
+                    .unwrap_or(128_000);
+
+                let pricing_input = m
+                    .get("input_price")
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(0.0);
+                let pricing_output = m
+                    .get("output_price")
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(0.0);
+
                 let mut model = serde_json::Map::new();
                 model.insert("id".to_string(), Value::String(id.to_string()));
+                model.insert("name".to_string(), Value::String(display_name.clone()));
                 model.insert("type".to_string(), Value::String("model".to_string()));
                 model.insert("display_name".to_string(), Value::String(display_name));
+                model.insert("context_window".to_string(), Value::Number(serde_json::Number::from(context_window)));
+                model.insert("input_price".to_string(), Value::Number(serde_json::Number::from_f64(pricing_input).unwrap_or(serde_json::Number::from_f64(0.0).unwrap())));
+                model.insert("output_price".to_string(), Value::Number(serde_json::Number::from_f64(pricing_output).unwrap_or(serde_json::Number::from_f64(0.0).unwrap())));
 
                 if let Some(created) = m.get("created") {
                     model.insert("created".to_string(), created.clone());
@@ -100,8 +123,11 @@ fn transform_models_to_anthropic(upstream: &Value) -> Value {
                 if let Some(owned_by) = m.get("owned_by") {
                     model.insert("owned_by".to_string(), owned_by.clone());
                 }
+                if let Some(arch) = m.get("architecture") {
+                    model.insert("architecture".to_string(), arch.clone());
+                }
 
-                Value::Object(model)
+                Some(Value::Object(model))
             })
             .collect(),
         None => {
@@ -110,8 +136,12 @@ fn transform_models_to_anthropic(upstream: &Value) -> Value {
                 .map(|m| {
                     serde_json::json!({
                         "id": m.id,
+                        "name": m.display_name,
                         "type": "model",
-                        "display_name": m.display_name
+                        "display_name": m.display_name,
+                        "context_window": 128000,
+                        "input_price": 0.0,
+                        "output_price": 0.0
                     })
                 })
                 .collect()
@@ -124,6 +154,51 @@ fn transform_models_to_anthropic(upstream: &Value) -> Value {
         "first_id": models.first().and_then(|m| m.get("id").and_then(|v| v.as_str())).unwrap_or(""),
         "last_id": models.last().and_then(|m| m.get("id").and_then(|v| v.as_str())).unwrap_or("")
     })
+}
+
+pub async fn handle_model_detail(
+    State(state): State<Arc<Mutex<ProxyState>>>,
+    axum::extract::Path(model_id): axum::extract::Path<String>,
+) -> impl IntoResponse {
+    let state_guard = state.lock().await;
+    let base_url = state_guard.config.opencode_base_url.clone();
+    let api_key = state_guard.config.opencode_api_key.clone();
+    drop(state_guard);
+
+    let model_url = format!("{}/v1/models/{}", base_url.trim_end_matches('/'), model_id);
+
+    let mut request = reqwest::Client::new()
+        .get(&model_url)
+        .header("Accept", "application/json");
+
+    if let Some(key) = &api_key {
+        request = request.header("Authorization", format!("Bearer {}", key));
+    }
+
+    match request.send().await {
+        Ok(resp) if resp.status().is_success() => {
+            match resp.json::<Value>().await {
+                Ok(model) => {
+                    let mut transformed = serde_json::Map::new();
+                    if let Some(id) = model.get("id").and_then(|v| v.as_str()) {
+                        transformed.insert("id".to_string(), Value::String(id.to_string()));
+                    }
+                    if let Some(name) = model.get("name").and_then(|v| v.as_str()) {
+                        transformed.insert("name".to_string(), Value::String(name.to_string()));
+                        transformed.insert("display_name".to_string(), Value::String(name.to_string()));
+                    }
+                    transformed.insert("type".to_string(), Value::String("model".to_string()));
+
+                    (StatusCode::OK, Json(Value::Object(transformed))).into_response()
+                }
+                Err(e) => {
+                    error!("Failed to parse model detail: {}", e);
+                    StatusCode::NOT_FOUND.into_response()
+                }
+            }
+        }
+        _ => StatusCode::NOT_FOUND.into_response(),
+    }
 }
 
 pub async fn handle_messages(
