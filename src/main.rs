@@ -5,7 +5,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 
-const VERSION: &str = "2.3.0";
+const VERSION: &str = "2.4.0";
 
 #[derive(Parser, Debug)]
 #[command(name = "oplire")]
@@ -78,6 +78,10 @@ enum Commands {
     },
     Doctor {},
     Setup {},
+    Models {
+        #[arg(long, default_value = "http://localhost:3000")]
+        upstream: String,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -289,6 +293,86 @@ fn run_interactive(cmd: &str, args: &[&str]) -> Result<(), String> {
     }
 }
 
+fn fetch_models(upstream: &str) -> Result<Vec<(String, String)>, String> {
+    let models_url = format!("{}/v1/models", upstream.trim_end_matches('/'));
+
+    let resp = reqwest::blocking::Client::new()
+        .get(&models_url)
+        .timeout(std::time::Duration::from_secs(10))
+        .send()
+        .map_err(|e| e.to_string())?;
+
+    if !resp.status().is_success() {
+        return Err(format!("HTTP {}", resp.status()));
+    }
+
+    let data = resp.json::<serde_json::Value>().map_err(|e| e.to_string())?;
+
+    let models = data
+        .get("data")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| "No models in response".to_string())?;
+
+    Ok(models
+        .iter()
+        .filter_map(|m| {
+            let id = m.get("id").and_then(|v| v.as_str())?.to_string();
+            let name = match m.get("name")
+                .or_else(|| m.get("display_name"))
+                .and_then(|v| v.as_str())
+            {
+                Some(n) => n.to_string(),
+                None => id.replace('-', " ")
+                    .split_whitespace()
+                    .map(|w| {
+                        let mut c = w.chars();
+                        match c.next() {
+                            None => String::new(),
+                            Some(ch) => format!(
+                                "{}{}",
+                                ch.to_uppercase().collect::<String>(),
+                                c.as_str()
+                            ),
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" "),
+            };
+            Some((id, name))
+        })
+        .collect())
+}
+
+fn select_model_interactively(models: &[(String, String)]) -> Option<String> {
+    use std::io::{self, Write};
+
+    if models.is_empty() {
+        return None;
+    }
+
+    println!();
+    println!("{}", "Available models:".bold());
+    println!();
+
+    for (i, (id, name)) in models.iter().enumerate() {
+        println!("  {} {} — {}", format!("[{}]", i + 1).dimmed(), id.bold().yellow(), name);
+    }
+
+    println!();
+    print!("{} Select model (1-{}): ", "→".cyan(), models.len());
+    io::stdout().flush().ok()?;
+
+    let mut input = String::new();
+    io::stdin().read_line(&mut input).ok()?;
+    let num: usize = input.trim().parse().ok()?;
+
+    if num >= 1 && num <= models.len() {
+        Some(models[num - 1].0.clone())
+    } else {
+        None
+    }
+}
+
 fn print_banner() {
     println!(
         "{}",
@@ -338,6 +422,89 @@ fn main() {
     let warp_installed = check_warp_installed();
 
     match &cli.command {
+        Commands::Models { upstream } => {
+            print_banner();
+            println!("{}", "Available Models".bold().cyan());
+            println!();
+            println!("{} Fetching models from {}...", "→".cyan(), upstream.bold());
+            println!();
+
+            let models_url = format!("{}/v1/models", upstream.trim_end_matches('/'));
+
+            match reqwest::blocking::Client::new()
+                .get(&models_url)
+                .timeout(std::time::Duration::from_secs(10))
+                .send()
+            {
+                Ok(resp) if resp.status().is_success() => {
+                    match resp.json::<serde_json::Value>() {
+                        Ok(data) => {
+                            if let Some(models) = data.get("data").and_then(|v| v.as_array()) {
+                                if models.is_empty() {
+                                    println!("{} No models found", "[INFO]".yellow());
+                                    return;
+                                }
+
+                                println!("  {}  {:<30}  {}", "#".dimmed(), "ID".bold(), "Name".bold());
+                                println!("  {}", "─".repeat(60).dimmed());
+
+                                for (i, m) in models.iter().enumerate() {
+                                    let id = m.get("id").and_then(|v| v.as_str()).unwrap_or("?");
+                                    let name: String = match m.get("name")
+                                        .or_else(|| m.get("display_name"))
+                                        .and_then(|v| v.as_str())
+                                    {
+                                        Some(n) => n.to_string(),
+                                        None => id.replace('-', " ").split_whitespace()
+                                            .map(|w| {
+                                                let mut c = w.chars();
+                                                match c.next() {
+                                                    None => String::new(),
+                                                    Some(ch) => format!("{}{}", ch.to_uppercase().collect::<String>(), c.as_str()),
+                                                }
+                                            })
+                                            .collect::<Vec<_>>().join(" "),
+                                    };
+
+                                    println!("  {}  {:<30}  {}",
+                                        format!("[{}]", i + 1).dimmed(),
+                                        id.yellow(),
+                                        name
+                                    );
+                                }
+
+                                println!();
+                                println!("{}", "Usage:".bold());
+                                println!("  {}", "oplire connect claude-code --model <id>".bold().yellow());
+                                println!();
+                                println!("{}", "Examples:".bold());
+                                for m in models.iter().take(3) {
+                                    let id = m.get("id").and_then(|v| v.as_str()).unwrap_or("");
+                                    if !id.is_empty() {
+                                        println!("  {}", format!("oplire connect claude-code --model {}", id).dimmed());
+                                    }
+                                }
+                            } else {
+                                println!("{} No 'data' field in response", "[ERROR]".red());
+                            }
+                        }
+                        Err(e) => {
+                            println!("{} Failed to parse response: {}", "[ERROR]".red(), e);
+                        }
+                    }
+                }
+                Ok(resp) => {
+                    println!("{} Upstream returned status: {}", "[ERROR]".red(), resp.status());
+                    println!("{} Is OpenCode Zen running on {}?", "Tip:".cyan(), upstream.bold());
+                }
+                Err(e) => {
+                    println!("{} Failed to connect to {}", "[ERROR]".red(), upstream.bold());
+                    println!("{} {}", "Error:".dimmed(), e.to_string().dimmed());
+                    println!("{} Is OpenCode Zen running?", "Tip:".cyan());
+                }
+            }
+        }
+
         Commands::Setup {} => {
             print_banner();
             println!("{}", "Welcome to oplire Setup Wizard".bold().green());
@@ -589,6 +756,34 @@ fn main() {
                 std::process::exit(1);
             }
 
+            let selected_model = match model {
+                Some(m) => m.clone(),
+                None => {
+                    println!("{} Fetching models from {}...", "→".cyan(), upstream.bold());
+                    match fetch_models(upstream) {
+                        Ok(models) => {
+                            if models.is_empty() {
+                                println!("{} No models found, using default", "[WARN]".yellow());
+                                String::new()
+                            } else {
+                                match select_model_interactively(&models) {
+                                    Some(id) => id,
+                                    None => {
+                                        println!("{} No selection made, using default", "[WARN]".yellow());
+                                        String::new()
+                                    }
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            println!("{} Failed to fetch models: {}", "[WARN]".yellow(), e);
+                            println!("{} Starting without model selection", "Tip:".cyan());
+                            String::new()
+                        }
+                    }
+                }
+            };
+
             let config = ProxyConfig {
                 listen_addr: listen.clone(),
                 opencode_base_url: upstream.clone(),
@@ -600,23 +795,19 @@ fn main() {
             println!("{} Proxy:      {}", "→".green(), listen.bold());
             println!("{} Upstream:   {}", "→".green(), upstream.bold());
             println!("{} Auto-reset: {} (attempts: {})", "→".green(), "enabled".green().bold(), max_retries.to_string().bold());
-            if let Some(m) = model {
-                println!("{} Model:     {}", "→".green(), m.bold());
+            if !selected_model.is_empty() {
+                println!("{} Model:     {}", "→".green(), selected_model.bold());
             }
             if let Some(sp) = system_prompt {
                 println!("{} System:    {} chars", "→".green(), sp.len().to_string().bold());
             }
-            println!();
-            println!("{}", "Note:".yellow().bold());
-            println!("  Claude Code'un /model picker'ı hardcoded Anthropic modellerini gösterir.");
-            println!("  Gerçek model seçimini --model flag'i ile yapabilirsiniz:");
-            println!("  {}", "oplire connect claude-code --model glm-4.7-free".bold().yellow());
             println!();
 
             println!("{}", "Starting proxy server...".dimmed());
 
             let proxy_config = config.clone();
             let listen_clone = listen.clone();
+            let model_clone = selected_model.clone();
 
             let proxy_handle = std::thread::spawn(move || {
                 let rt = tokio::runtime::Runtime::new().unwrap();
@@ -634,8 +825,8 @@ fn main() {
             cmd.env("ANTHROPIC_BASE_URL", format!("http://{}", listen_clone))
                 .env("ANTHROPIC_API_KEY", "oplire-proxy-key");
 
-            if let Some(m) = model {
-                cmd.env("ANTHROPIC_MODEL", m);
+            if !model_clone.is_empty() {
+                cmd.env("ANTHROPIC_MODEL", &model_clone);
             }
 
             if let Some(sp) = system_prompt {
@@ -1104,6 +1295,7 @@ fn main() {
             println!("  oplire watch               # Monitor OpenCode, auto-reset");
             println!();
             println!("{}", "Configuration:".bold());
+            println!("  oplire models              # List available OpenCode models");
             println!("  oplire config show         # Show current config");
             println!("  oplire config set          # Save config");
             println!("  oplire config reset        # Reset to defaults");
@@ -1111,7 +1303,7 @@ fn main() {
         }
     }
 
-    if !matches!(&cli.command, Commands::About {} | Commands::Proxy { .. } | Commands::Connect { .. } | Commands::Daemon { .. } | Commands::Watch { .. } | Commands::Doctor {} | Commands::Config { .. } | Commands::Setup {} | Commands::Install { .. }) {
+    if !matches!(&cli.command, Commands::About {} | Commands::Proxy { .. } | Commands::Connect { .. } | Commands::Daemon { .. } | Commands::Watch { .. } | Commands::Doctor {} | Commands::Config { .. } | Commands::Setup {} | Commands::Install { .. } | Commands::Models { .. }) {
         println!("\n{} v{}", "oplire".bold(), VERSION.dimmed());
     }
 }
