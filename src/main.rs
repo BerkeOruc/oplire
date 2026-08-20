@@ -594,16 +594,42 @@ fn main() {
                             Ok(()) => print_success("WARP installed"),
                             Err(e) => print_fail(&format!("Installation failed: {}", e)),
                         }
-                    } else if os_release.contains("ubuntu") || os_release.contains("debian") {
+                    } else if os_release.contains("ubuntu")
+                        || os_release.contains("debian")
+                        || os_release.contains("kali")
+                    {
                         print_step(1, "Adding Cloudflare repository...");
+
+                        // Remove the legacy repository file created by older oplire versions.
                         let _ = run_sudo_command(
-                            "curl -fsSL https://pkg.cloudflare.com/pubkey.gpg | gpg --yes -o /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg 2>/dev/null || true",
+                            "rm -f /etc/apt/sources.list.d/cloudflare-warp.list",
+                            cli.dry_run,
+                            cli.verbose,
+                        );
+
+                        let _ = run_sudo_command(
+                            "curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg | gpg --yes --dearmor --output /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg",
                             cli.dry_run, cli.verbose,
                         );
+
+                        // Kali is rolling and reports `kali-rolling`, which is not
+                        // published by Cloudflare. Use Debian stable (trixie), as
+                        // recommended for third-party Debian repositories on Kali.
+                        let repo_codename = if os_release.contains("kali") {
+                            "trixie"
+                        } else {
+                            "$(. /etc/os-release && printf '%s' \"$VERSION_CODENAME\")"
+                        };
+
+                        let repo_command = format!(
+                            "echo \"deb [signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] https://pkg.cloudflareclient.com/ {} main\" > /etc/apt/sources.list.d/cloudflare-client.list",
+                            repo_codename
+                        );
                         let _ = run_sudo_command(
-                            "echo 'deb [signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] https://pkg.cloudflare.com/ any main' > /etc/apt/sources.list.d/cloudflare-warp.list",
+                            &repo_command,
                             cli.dry_run, cli.verbose,
                         );
+
                         print_step(2, "Installing cloudflare-warp...");
                         let _ = run_sudo_command("apt update -qq && apt install -y -qq cloudflare-warp", cli.dry_run, cli.verbose);
                     } else if os_release.contains("fedora") {
