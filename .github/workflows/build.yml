@@ -2,10 +2,10 @@ name: Build and Release
 
 on:
   push:
-    branches: [main]
+    branches: [master]
     tags: [v*]
   pull_request:
-    branches: [main]
+    branches: [master]
 
 env:
   CARGO_TERM_COLOR: always

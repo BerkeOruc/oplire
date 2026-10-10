@@ -14,6 +14,7 @@ use tokio::sync::Mutex;
 use tracing::{error, info, warn};
 
 use crate::config::ProxyConfig;
+use crate::proxy::server::build_client;
 use crate::transform::{anthropic_to_opencode_request, opencode_stream_to_anthropic, opencode_response_to_anthropic};
 use crate::warp::WarpResolver;
 
@@ -27,11 +28,12 @@ pub async fn handle_models(State(state): State<Arc<Mutex<ProxyState>>>) -> impl 
     let state_guard = state.lock().await;
     let base_url = state_guard.config.opencode_base_url.clone();
     let api_key = state_guard.config.opencode_api_key.clone();
+    let client = state_guard.client.clone();
     drop(state_guard);
 
     let models_url = format!("{}/v1/models", base_url.trim_end_matches('/'));
 
-    let mut request = reqwest::Client::new()
+    let mut request = client
         .get(&models_url)
         .header("Accept", "application/json");
 
@@ -163,11 +165,12 @@ pub async fn handle_model_detail(
     let state_guard = state.lock().await;
     let base_url = state_guard.config.opencode_base_url.clone();
     let api_key = state_guard.config.opencode_api_key.clone();
+    let client = state_guard.client.clone();
     drop(state_guard);
 
     let model_url = format!("{}/v1/models/{}", base_url.trim_end_matches('/'), model_id);
 
-    let mut request = reqwest::Client::new()
+    let mut request = client
         .get(&model_url)
         .header("Accept", "application/json");
 
@@ -232,15 +235,16 @@ pub async fn handle_messages(
     let api_key = state_guard.config.opencode_api_key.clone();
     let max_retries = state_guard.config.max_retries;
     let reset_delay = state_guard.config.warp_reset_delay_ms;
+    let mut client = state_guard.client.clone();
     drop(state_guard);
 
     let mut retry_count = 0;
 
     loop {
         let result = if is_stream {
-            forward_streaming(&base_url, &api_key, &opencode_body, &model).await
+            forward_streaming(&base_url, &api_key, &opencode_body, &model, &client).await
         } else {
-            forward_non_streaming(&base_url, &api_key, &opencode_body, &model).await
+            forward_non_streaming(&base_url, &api_key, &opencode_body, &model, &client).await
         };
 
         match result {
@@ -260,6 +264,11 @@ pub async fn handle_messages(
                 if !resolver.handle_429(retry_count - 1).await {
                     return error_response("WARP reset failed, rate limit still active");
                 }
+                if let Ok(fresh) = build_client() {
+                    state.lock().await.client = fresh.clone();
+                    client = fresh;
+                    info!("Rebuilt HTTP client pool after WARP reset");
+                }
             }
             Err(ProxyError::RequestFailed(msg)) => {
                 error!("Upstream request failed: {}", msg);
@@ -274,10 +283,11 @@ async fn forward_streaming(
     api_key: &Option<String>,
     body: &Value,
     model: &str,
+    client: &Client,
 ) -> Result<Response, ProxyError> {
     let url = format!("{}/v1/chat/completions", base_url.trim_end_matches('/'));
 
-    let mut request = reqwest::Client::new()
+    let mut request = client
         .post(&url)
         .header("Content-Type", "application/json")
         .header("Accept", "text/event-stream")
@@ -356,10 +366,11 @@ async fn forward_non_streaming(
     api_key: &Option<String>,
     body: &Value,
     model: &str,
+    client: &Client,
 ) -> Result<Response, ProxyError> {
     let url = format!("{}/v1/chat/completions", base_url.trim_end_matches('/'));
 
-    let mut request = reqwest::Client::new()
+    let mut request = client
         .post(&url)
         .header("Content-Type", "application/json")
         .json(body);

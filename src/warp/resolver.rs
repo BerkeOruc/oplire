@@ -63,17 +63,28 @@ impl WarpResolver {
         tokio::time::sleep(Duration::from_millis(1000)).await;
 
         info!("Step 2: systemctl stop warp-svc");
-        run_sudo_command("systemctl stop warp-svc").await?;
+        let stopped = run_sudo_command("systemctl stop warp-svc").await.is_ok();
+        if !stopped {
+            warn!("Stopping WARP service failed or skipped");
+        }
 
         tokio::time::sleep(Duration::from_millis(500)).await;
 
         info!("Step 3: Clearing WARP cache");
-        run_sudo_command("rm -rf /var/lib/cloudflare-warp/*").await?;
+        if stopped {
+            if let Err(e) = run_sudo_command("rm -rf /var/lib/cloudflare-warp/*").await {
+                warn!("Clearing WARP cache failed or skipped: {}", e);
+            }
+        } else {
+            warn!("Skipping cache clear: service may still be running");
+        }
 
         tokio::time::sleep(Duration::from_millis(500)).await;
 
         info!("Step 4: systemctl start warp-svc");
-        run_sudo_command("systemctl start warp-svc").await?;
+        if let Err(e) = run_sudo_command("systemctl start warp-svc").await {
+            warn!("Starting WARP service failed or skipped: {}", e);
+        }
 
         tokio::time::sleep(Duration::from_millis(2000)).await;
 
