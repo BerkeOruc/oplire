@@ -11,6 +11,7 @@
 | Scripts parsing WARP status | Text output now comes from `warp-cli`. Switch to `status --json` and read `connected` or `state` instead of `tunnel_id`. Handle exit status 1 when `warp-cli` is missing or fails. |
 | `install warp` | Follow the Cloudflare setup link printed for your platform. `setup` and `install all` no longer install WARP. |
 | `opencode serve` as the bridge upstream | Use an inference API that serves OpenAI Chat Completions. See [choosing an upstream](bridge.md#choose-an-upstream). |
+| A non-loopback `--listen` address | Use a loopback address such as `127.0.0.1:8080`. The bridge has no client authentication and cannot listen on an external interface. |
 
 If `oplire stop` in 2.x disabled the WARP service on a systemd-based Linux installation, re-enable it with `sudo systemctl enable --now warp-svc`. If the client no longer has a registration, complete the [official Linux setup](https://developers.cloudflare.com/warp-client/get-started/linux/) before using `oplire warp connect`.
 

@@ -1,20 +1,23 @@
 use axum::{
     Json,
     body::Body,
-    extract::State,
-    http::{HeaderValue, StatusCode, header::RETRY_AFTER},
+    extract::{State, rejection::BytesRejection},
+    http::{
+        HeaderMap, HeaderValue, StatusCode,
+        header::{CONTENT_TYPE, RETRY_AFTER},
+    },
     response::{IntoResponse, Response},
 };
 use bytes::Bytes;
-use futures_util::StreamExt;
+use futures_util::stream;
 use reqwest::Client;
 use serde_json::Value;
-use std::sync::Arc;
+use std::{convert::Infallible, sync::Arc};
 use tracing::warn;
 
 use crate::config::ProxyConfig;
 use crate::transform::{
-    anthropic_to_opencode_request, opencode_response_to_anthropic, opencode_stream_to_anthropic,
+    anthropic_to_opencode_request, opencode_response_to_anthropic, stream::MessageStream,
 };
 
 pub struct ProxyState {
@@ -174,7 +177,27 @@ pub async fn handle_model_detail(
     }
 }
 
-pub async fn handle_messages(State(state): State<Arc<ProxyState>>, body: Bytes) -> Response {
+pub async fn handle_messages(
+    State(state): State<Arc<ProxyState>>,
+    headers: HeaderMap,
+    body: Result<Bytes, BytesRejection>,
+) -> Response {
+    let body = match body {
+        Ok(body) => body,
+        Err(error) if error.status() == StatusCode::PAYLOAD_TOO_LARGE => {
+            return error_response(
+                error.status(),
+                "The bridge accepts request bodies up to 32 MiB",
+            );
+        }
+        Err(error) => return error_response(error.status(), "Could not read the request body"),
+    };
+    if !has_media_type(&headers, "application/json") {
+        return error_response(
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            "Expected application/json",
+        );
+    }
     let request_body = match serde_json::from_slice::<Value>(&body) {
         Ok(v) => v,
         Err(e) => {
@@ -182,23 +205,17 @@ pub async fn handle_messages(State(state): State<Arc<ProxyState>>, body: Bytes) 
         }
     };
 
-    let is_stream = request_body
-        .get("stream")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
-
-    let model = request_body
-        .get("model")
-        .and_then(|v| v.as_str())
-        .unwrap_or("unknown");
+    let upstream_body = match anthropic_to_opencode_request(&request_body) {
+        Ok(body) => body,
+        Err(message) => return error_response(StatusCode::BAD_REQUEST, message),
+    };
+    let is_stream = upstream_body["stream"] == true;
+    let model = upstream_body["model"].as_str().expect("validated model ID");
     let url = format!(
         "{}/v1/chat/completions",
         state.config.opencode_base_url.trim_end_matches('/')
     );
-    let mut request = state
-        .client
-        .post(&url)
-        .json(&anthropic_to_opencode_request(&request_body));
+    let mut request = state.client.post(&url).json(&upstream_body);
     if is_stream {
         request = request.header("Accept", "text/event-stream");
     }
@@ -224,8 +241,11 @@ pub async fn handle_messages(State(state): State<Arc<ProxyState>>, body: Bytes) 
         Ok(resp) if is_stream => forward_streaming(resp, model),
         Ok(resp) => match resp.json::<Value>().await {
             Ok(body) => {
-                let mut response =
-                    Json(opencode_response_to_anthropic(&body, model)).into_response();
+                let body = match opencode_response_to_anthropic(&body, model) {
+                    Ok(body) => body,
+                    Err(message) => return error_response(StatusCode::BAD_GATEWAY, message),
+                };
+                let mut response = Json(body).into_response();
                 let millis = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .map_or(0, |duration| duration.as_millis());
@@ -251,33 +271,51 @@ async fn upstream_validation_message(upstream: &mut reqwest::Response) -> Option
     }
     let error: Value = serde_json::from_slice(&body).ok()?;
     let message = error.get("error")?.get("message")?.as_str()?.trim();
+    if error["error"]["code"] == "context_length_exceeded" {
+        return Some(format!("Prompt is too long: {message}"));
+    }
     (!message.is_empty()).then(|| message.to_owned())
 }
 
+fn has_media_type(headers: &HeaderMap, expected: &str) -> bool {
+    headers
+        .get(CONTENT_TYPE)
+        .and_then(|header| header.to_str().ok())
+        .and_then(|header| header.split(';').next())
+        .is_some_and(|value| value.trim().eq_ignore_ascii_case(expected))
+}
+
 fn forward_streaming(response: reqwest::Response, model: &str) -> Response {
-    let model_owned = model.to_string();
-    let stream = response.bytes_stream().map(move |chunk| {
-        let chunk = chunk.map_err(std::io::Error::other)?;
-        let lines = String::from_utf8_lossy(&chunk);
-        let mut output = String::new();
+    if !has_media_type(response.headers(), "text/event-stream") {
+        return error_response(
+            StatusCode::BAD_GATEWAY,
+            "Upstream did not return an event stream",
+        );
+    }
 
-        for line in lines.lines() {
-            if let Some(transformed) = opencode_stream_to_anthropic(line, &model_owned) {
-                output.push_str(&transformed);
+    let stream = stream::unfold(
+        (response, MessageStream::new(model)),
+        |(mut upstream, mut message)| async move {
+            while !message.is_finished() {
+                let output = match upstream.chunk().await {
+                    Ok(Some(chunk)) => message.push(&chunk),
+                    Ok(None) => message.eof(),
+                    Err(error) => {
+                        warn!("Upstream event stream failed: {}", error.without_url());
+                        message.fail("Upstream event stream was interrupted")
+                    }
+                };
+                if !output.is_empty() {
+                    return Some((
+                        Ok::<_, Infallible>(Bytes::from(output)),
+                        (upstream, message),
+                    ));
+                }
             }
-        }
-
-        if output.is_empty() {
-            Ok::<Bytes, std::io::Error>(Bytes::from(lines.into_owned()))
-        } else {
-            Ok::<Bytes, std::io::Error>(Bytes::from(output))
-        }
-    });
-
-    let body = Body::from_stream(stream);
-
-    let mut response = Response::new(body);
-    *response.status_mut() = StatusCode::OK;
+            None
+        },
+    );
+    let mut response = Response::new(Body::from_stream(stream));
     response.headers_mut().insert(
         "Content-Type",
         HeaderValue::from_static("text/event-stream; charset=utf-8"),
@@ -287,20 +325,20 @@ fn forward_streaming(response: reqwest::Response, model: &str) -> Response {
         .insert("Cache-Control", HeaderValue::from_static("no-cache"));
     response
         .headers_mut()
-        .insert("Connection", HeaderValue::from_static("keep-alive"));
-    response
-        .headers_mut()
         .insert("X-Accel-Buffering", HeaderValue::from_static("no"));
 
     response
 }
 
-fn error_response(status: StatusCode, message: &str) -> Response {
+pub(super) fn error_response(status: StatusCode, message: &str) -> Response {
     let error_type = match status {
-        StatusCode::BAD_REQUEST | StatusCode::UNPROCESSABLE_ENTITY => "invalid_request_error",
+        StatusCode::BAD_REQUEST
+        | StatusCode::UNPROCESSABLE_ENTITY
+        | StatusCode::UNSUPPORTED_MEDIA_TYPE => "invalid_request_error",
         StatusCode::UNAUTHORIZED => "authentication_error",
         StatusCode::FORBIDDEN => "permission_error",
         StatusCode::NOT_FOUND => "not_found_error",
+        StatusCode::PAYLOAD_TOO_LARGE => "request_too_large",
         StatusCode::TOO_MANY_REQUESTS => "rate_limit_error",
         _ => "api_error",
     };
@@ -320,8 +358,13 @@ fn upstream_error(upstream: &reqwest::Response, message: &str) -> Response {
         return error_response(StatusCode::BAD_GATEWAY, "Unexpected upstream status");
     }
     let mut response = error_response(status, message);
-    if let Some(value) = upstream.headers().get(RETRY_AFTER) {
-        response.headers_mut().insert(RETRY_AFTER, value.clone());
+    for name in [
+        RETRY_AFTER,
+        axum::http::HeaderName::from_static("x-should-retry"),
+    ] {
+        if let Some(value) = upstream.headers().get(&name) {
+            response.headers_mut().insert(name, value.clone());
+        }
     }
     response
 }

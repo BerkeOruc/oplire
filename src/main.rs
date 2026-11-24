@@ -237,14 +237,16 @@ fn run_interactive(cmd: &str, args: &[&str]) -> Result<(), String> {
     }
 }
 
-fn fetch_models(upstream: &str) -> Result<Vec<(String, String)>, String> {
+fn fetch_models(upstream: &str, api_key: Option<&str>) -> Result<Vec<(String, String)>, String> {
     let models_url = format!("{}/v1/models", upstream.trim_end_matches('/'));
 
-    let resp = reqwest::blocking::Client::new()
+    let mut request = reqwest::blocking::Client::new()
         .get(&models_url)
-        .timeout(std::time::Duration::from_secs(10))
-        .send()
-        .map_err(|e| e.to_string())?;
+        .timeout(std::time::Duration::from_secs(10));
+    if let Some(key) = api_key {
+        request = request.bearer_auth(key);
+    }
+    let resp = request.send().map_err(|e| e.without_url().to_string())?;
 
     if !resp.status().is_success() {
         return Err(format!("HTTP {}", resp.status()));
@@ -651,29 +653,17 @@ fn main() {
                 Some(m) => m.clone(),
                 None => {
                     println!("{} Fetching models from {}...", "→".cyan(), upstream.bold());
-                    match fetch_models(upstream) {
-                        Ok(models) => {
-                            if models.is_empty() {
-                                println!("{} No models found, using default", "[WARN]".yellow());
-                                String::new()
-                            } else {
-                                match select_model_interactively(&models) {
-                                    Some(id) => id,
-                                    None => {
-                                        println!("{} No selection made, using default", "[WARN]".yellow());
-                                        String::new()
-                                    }
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            println!("{} Failed to fetch models: {}", "[WARN]".yellow(), e);
-                            println!("{} Starting without model selection", "Tip:".cyan());
-                            String::new()
-                        }
-                    }
+                    fetch_models(upstream, api_key.as_deref())
+                        .map_err(|error| eprintln!("Could not fetch upstream models: {error}"))
+                        .ok()
+                        .and_then(|models| select_model_interactively(&models))
+                        .unwrap_or_default()
                 }
             };
+            if selected_model.trim().is_empty() {
+                eprintln!("Select an upstream model or pass --model <id>");
+                std::process::exit(1);
+            }
 
             let config = ProxyConfig {
                 listen_addr: listen.clone(),
@@ -681,44 +671,66 @@ fn main() {
                 opencode_api_key: api_key.clone(),
             };
 
-            println!("{} Proxy:      {}", "→".green(), listen.bold());
+            let rt = tokio::runtime::Runtime::new().expect("could not start proxy runtime");
+            let (listener, app) = rt
+                .block_on(oplire_reset::proxy::server::bind_proxy(&config))
+                .unwrap_or_else(|error| {
+                    eprintln!("Could not start the bridge on {listen}: {error}");
+                    std::process::exit(1);
+                });
+            let address = listener.local_addr().expect("bound proxy address");
+            rt.spawn(async move {
+                if let Err(error) = axum::serve(listener, app).await {
+                    eprintln!("Bridge stopped: {error}");
+                }
+            });
+
+            println!("{} Proxy:      {}", "→".green(), address.to_string().bold());
             println!("{} Upstream:   {}", "→".green(), upstream.bold());
-            if !selected_model.is_empty() {
-                println!("{} Model:     {}", "→".green(), selected_model.bold());
-            }
+            println!("{} Model:     {}", "→".green(), selected_model.bold());
             if let Some(sp) = system_prompt {
                 println!("{} System:    {} chars", "→".green(), sp.len().to_string().bold());
             }
             println!();
 
-            println!("{}", "Starting proxy server...".dimmed());
-
-            let proxy_config = config.clone();
-            let listen_clone = listen.clone();
-            let model_clone = selected_model.clone();
-
-            let proxy_handle = std::thread::spawn(move || {
-                let rt = tokio::runtime::Runtime::new().unwrap();
-                rt.block_on(async {
-                    oplire_reset::proxy::start_proxy_server(proxy_config).await
-                })
-            });
-
-            std::thread::sleep(std::time::Duration::from_millis(1500));
-
             println!("{}", "Launching Claude Code...".dimmed());
             println!();
 
             let mut cmd = Command::new("claude");
-            cmd.env("ANTHROPIC_BASE_URL", format!("http://{}", listen_clone))
-                .env("ANTHROPIC_API_KEY", "oplire-proxy-key");
-
-            if !model_clone.is_empty() {
-                cmd.env("ANTHROPIC_MODEL", &model_clone);
+            cmd.env("ANTHROPIC_BASE_URL", format!("http://{address}"))
+                .env("ANTHROPIC_AUTH_TOKEN", "oplire-local")
+                .env_remove("ANTHROPIC_API_KEY")
+                .env("ANTHROPIC_MODEL", &selected_model);
+            for name in [
+                "CLAUDE_CODE_USE_BEDROCK",
+                "CLAUDE_CODE_USE_VERTEX",
+                "CLAUDE_CODE_USE_FOUNDRY",
+                "CLAUDE_CODE_USE_MANTLE",
+                "CLAUDE_CODE_USE_ANTHROPIC_AWS",
+            ] {
+                cmd.env_remove(name);
+            }
+            for name in [
+                "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+                "ANTHROPIC_DEFAULT_SONNET_MODEL",
+                "ANTHROPIC_DEFAULT_OPUS_MODEL",
+            ] {
+                cmd.env(
+                    name,
+                    std::env::var_os(name).unwrap_or_else(|| selected_model.as_str().into()),
+                );
+            }
+            for (name, value) in [
+                ("CLAUDE_CODE_DISABLE_THINKING", "1"),
+                ("CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS", "1"),
+                ("CLAUDE_CODE_DISABLE_ADVISOR_TOOL", "1"),
+                ("CLAUDE_CODE_ATTRIBUTION_HEADER", "0"),
+            ] {
+                cmd.env(name, std::env::var_os(name).unwrap_or_else(|| value.into()));
             }
 
             if let Some(sp) = system_prompt {
-                cmd.env("CLAUDE_CODE_SYSTEM_PROMPT", sp);
+                cmd.args(["--append-system-prompt", sp]);
             }
 
             if !claude_args.is_empty() {
@@ -734,7 +746,10 @@ fn main() {
             println!("{} Claude Code exited with: {}", "Info:".cyan(), status.to_string().bold());
             println!("{} Shutting down proxy...", "→".green().dimmed());
 
-            drop(proxy_handle);
+            drop(rt);
+            if !status.success() {
+                std::process::exit(status.code().unwrap_or(1));
+            }
         }
 
         Commands::Daemon {

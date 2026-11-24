@@ -1,6 +1,6 @@
 # oplire
 
-oplire translates text requests from the Anthropic Messages API to an OpenAI Chat Completions upstream you choose. It runs locally, discovers models from your upstream, and includes optional Cloudflare WARP controls.
+oplire translates Anthropic Messages requests to an OpenAI Chat Completions upstream you choose. It supports streaming text, client tools, and image inputs, and includes optional Cloudflare WARP controls.
 
 [Install](#install) · [Quick start](#quick-start) · [Bridge guide](docs/bridge.md) · [WARP guide](docs/warp.md) · [Upgrade from 2.x](docs/migration.md)
 
@@ -50,7 +50,7 @@ curl --fail-with-body http://127.0.0.1:8080/v1/messages \
 See the [bridge guide](docs/bridge.md) for upstream authentication, endpoint details, and troubleshooting.
 
 > [!IMPORTANT]
-> The bridge handles text and has partial streaming support. The Claude Code launcher is experimental: replies may fail to render, and Claude Code cannot use its tools through the bridge. Keep the listener on loopback because the bridge does not authenticate local clients.
+> The bridge listens only on loopback and does not authenticate local clients. For Claude Code, choose an upstream model with streaming and function calling. See the [launcher guide](docs/bridge.md#claude-code-launcher) for limitations.
 
 ## OpenCode V2
 
