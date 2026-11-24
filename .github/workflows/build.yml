@@ -89,7 +89,7 @@ jobs:
           pattern: release-*
           path: release
           merge-multiple: true
-      - uses: softprops/action-gh-release@40c2ca6ddd77ba2a30bbea8f67409c0f76868d67 # v3
+      - uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # v3.0.4
         with:
           files: release/*
           fail_on_unmatched_files: true
