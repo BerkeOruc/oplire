@@ -5,7 +5,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 
-const VERSION: &str = "2.4.0";
+const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[derive(Parser, Debug)]
 #[command(name = "oplire")]
@@ -88,7 +88,7 @@ enum Commands {
 enum InstallTarget {
     /// Install Cloudflare WARP
     Warp {},
-    /// Install OpenCode desktop app
+    /// Install the OpenCode V2 CLI with Bun
     Opencode {},
     /// Install Claude Code CLI
     ClaudeCode {},
@@ -198,13 +198,14 @@ fn check_opencode_installed() -> bool {
         || Command::new("opencode").arg("--help").output().is_ok()
 }
 
-fn check_opencode_running(base_url: &str) -> bool {
+fn check_upstream_models(base_url: &str) -> bool {
     let url = format!("{}/v1/models", base_url.trim_end_matches('/'));
     reqwest::blocking::Client::new()
         .get(&url)
         .timeout(std::time::Duration::from_secs(3))
         .send()
-        .map(|r| r.status().is_success())
+        .and_then(|r| r.error_for_status()?.json::<serde_json::Value>())
+        .map(|body| body.get("data").is_some_and(serde_json::Value::is_array))
         .unwrap_or(false)
 }
 
@@ -495,12 +496,12 @@ fn main() {
                 }
                 Ok(resp) => {
                     println!("{} Upstream returned status: {}", "[ERROR]".red(), resp.status());
-                    println!("{} Is OpenCode Zen running on {}?", "Tip:".cyan(), upstream.bold());
+                    println!("{} Check the inference API at {}.", "Tip:".cyan(), upstream.bold());
                 }
                 Err(e) => {
                     println!("{} Failed to connect to {}", "[ERROR]".red(), upstream.bold());
                     println!("{} {}", "Error:".dimmed(), e.to_string().dimmed());
-                    println!("{} Is OpenCode Zen running?", "Tip:".cyan());
+                    println!("{} Check that the inference API is running.", "Tip:".cyan());
                 }
             }
         }
@@ -515,7 +516,7 @@ fn main() {
             let mut steps_needed = Vec::new();
 
             if !check_node_installed() {
-                steps_needed.push(("Node.js", "npm install -g npm", "Required for Claude Code and OpenCode"));
+                steps_needed.push(("Node.js", "https://nodejs.org/", "Required for the Claude Code npm installer"));
             }
             if !warp_installed {
                 steps_needed.push(("Cloudflare WARP", "oplire install warp", "Required for rate limit reset"));
@@ -661,30 +662,38 @@ fn main() {
 
                 if check_opencode_installed() {
                     println!("{} OpenCode is already installed", "[INFO]".green());
+                    println!("V1 to V2 migration: https://opencode.ai/docs/migrate-v1");
                     return;
                 }
 
-                if !check_node_installed() {
-                    println!("{} Node.js is required but not found", "[ERROR]".red());
-                    println!("{} Install Node.js first: https://nodejs.org/", "Fix:".cyan());
+                let args = ["install", "-g", "--trust", "@opencode/cli"];
+                if cli.dry_run {
+                    let _ = run_command("bun", &args, true, cli.verbose);
+                    return;
+                }
+
+                if !Command::new("bun")
+                    .arg("--version")
+                    .output()
+                    .is_ok_and(|o| o.status.success())
+                {
+                    print_fail("Bun is required for this installer. See https://opencode.ai/docs/#cli for other options.");
                     std::process::exit(1);
                 }
 
-                print_step(1, "Installing OpenCode via npm...");
-                match run_interactive("npm", &["install", "-g", "opencode-ai"]) {
+                print_step(1, "Installing OpenCode V2 via Bun...");
+                match run_interactive("bun", &args) {
                     Ok(()) => {
                         print_success("OpenCode installed");
                         println!();
-                        println!("{}", "Next steps:".bold());
-                        println!("  1. {}", "opencode".bold().yellow());
-                        println!("  2. {}", "oplire doctor".bold().yellow());
-                        println!("  3. {}", "oplire connect claude-code".bold().yellow());
+                        println!("  Run `opencode` and use `/models` to select a model.");
                     }
                     Err(e) => {
                         print_fail(&format!("Installation failed: {}", e));
                         println!();
                         println!("{} Try manually:", "Fix:".cyan());
-                        println!("  {}", "npm install -g opencode-ai".bold().yellow());
+                        println!("  {}", "bun install -g --trust @opencode/cli".bold().yellow());
+                        std::process::exit(1);
                     }
                 }
             }
@@ -977,10 +986,10 @@ fn main() {
 
             let config = load_config();
             let upstream = config.upstream.clone();
-            if check_opencode_running(&upstream) {
-                checks.push(("OpenCode Zen", format!("running ({})", upstream), true));
+            if check_upstream_models(&upstream) {
+                checks.push(("Upstream models", format!("available ({})", upstream), true));
             } else {
-                checks.push(("OpenCode Zen", format!("NOT REACHABLE ({})", upstream), false));
+                checks.push(("Upstream models", format!("UNAVAILABLE ({})", upstream), false));
                 all_ok = false;
             }
 
@@ -1117,7 +1126,7 @@ fn main() {
             };
 
             print_banner();
-            println!("{}", "Anthropic ↔ OpenCode Zen Proxy".bold().cyan());
+            println!("{}", "Anthropic Messages Proxy".bold().cyan());
             println!();
             println!("{} Listening on: {}", "→".green(), listen.bold());
             println!("{} Upstream:     {}", "→".green(), upstream.bold());
