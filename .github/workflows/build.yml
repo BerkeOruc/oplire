@@ -10,6 +10,9 @@ on:
 env:
   CARGO_TERM_COLOR: always
 
+permissions:
+  contents: read
+
 jobs:
   build:
     runs-on: ${{ matrix.os }}
@@ -17,17 +20,20 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
+          - os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
             binary: oplire
             ext: ''
             os_name: linux
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            skip_package: true
           - os: windows-latest
-            target: x86_64-pc-windows-gnu
+            target: x86_64-pc-windows-msvc
             binary: oplire.exe
             ext: '.exe'
             os_name: windows
-          - os: macos-latest
+          - os: macos-26-intel
             target: x86_64-apple-darwin
             binary: oplire
             ext: ''
@@ -39,28 +45,52 @@ jobs:
             os_name: macos-arm
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+      - name: Set up Rust
+        run: |
+          rustup toolchain install --no-self-update
+          rustup target add ${{ matrix.target }}
 
-      - name: Add target
-        run: rustup target add ${{ matrix.target }}
+      - name: Test
+        run: cargo test --locked --all-targets --target ${{ matrix.target }}
 
       - name: Build
-        run: cargo build --release --target ${{ matrix.target }}
+        run: cargo build --locked --release --target ${{ matrix.target }}
 
       - name: Package
+        if: ${{ !matrix.skip_package }}
+        shell: bash
         run: |
           mkdir -p release
-          cp target/${{ matrix.target }}/release/${{ matrix.binary }} release/oplire-${{ matrix.os_name }}${{ matrix.ext }}
+          binary="release/oplire-${{ matrix.os_name }}${{ matrix.ext }}"
+          cp "target/${{ matrix.target }}/release/${{ matrix.binary }}" "$binary"
+          "./$binary" --version
 
-      - name: Upload Release
-        uses: softprops/action-gh-release@v2
-        if: startsWith(github.ref, 'refs/tags/v')
+      - name: Upload binary
+        if: ${{ !matrix.skip_package }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: release-${{ matrix.os_name }}
+          path: release/*
+          if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          pattern: release-*
+          path: release
+          merge-multiple: true
+      - uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # v3.0.4
         with:
           files: release/*
-          draft: false
+          fail_on_unmatched_files: true
           prerelease: ${{ contains(github.ref, 'beta') }}
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

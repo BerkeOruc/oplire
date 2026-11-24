@@ -1,169 +1,69 @@
-```
-   ___      ___    _       ___     ___     ___
-  / _ \    | _ \  | |     |_ _|   | _ \   | __|
- | (_) |   |  _/  | |__    | |    |   /   | _|
-  \___/   _|_|_   |____|  |___|   |_|_\   |___|
-_|"""""|_| """ |_|"""""|_|"""""|_|"""""|_|"""""|
-"`-0-0-'"`-0-0-'"`-0-0-'"`-0-0-'"`-0-0-'"`-0-0-'
-     OpenCode Limit Reset + Proxy
-     by Berke Oruc
-```
+# oplire
 
-[![Rust](https://img.shields.io/badge/rust-1.75%2B-orange?style=flat-square&logo=rust)](https://www.rust-lang.org)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](LICENSE)
-[![AUR](https://img.shields.io/badge/AUR-2.1.0-blue?style=flat-square)](https://aur.archlinux.org/packages/oplire)
+oplire translates Anthropic Messages requests to an OpenAI Chat Completions upstream you choose. It supports streaming text, client tools, and image inputs, and includes optional Cloudflare WARP controls.
 
-## What is oplire?
+[Install](#install) · [Quick start](#quick-start) · [Bridge guide](docs/bridge.md) · [WARP guide](docs/warp.md) · [Upgrade from 2.x](docs/migration.md)
 
-**oplire** is a dual-purpose tool:
+## Install
 
-1. **WARP Rate Limit Reset** - Rotates your IP via Cloudflare WARP to reset OpenCode rate limits
-2. **Anthropic Proxy Bridge** - Reverse proxy that connects Claude Code to OpenCode Zen's free models with automatic rate limit recovery
+Download the binary for your platform from [GitHub Releases](https://github.com/BerkeOruc/oplire/releases). If the 3.0 release is not listed yet, build from source below. Put the binary on your `PATH` as `oplire` (`oplire.exe` on Windows). On Linux or macOS, run `chmod +x oplire`. Check it with `oplire --version`.
 
-### How It Works
+| Platform | Release file |
+| --- | --- |
+| Linux x86-64 | `oplire-linux` |
+| Windows x86-64 | `oplire-windows.exe` |
+| macOS Apple Silicon | `oplire-macos-arm` |
+| macOS Intel | `oplire-macos` |
 
-#### WARP Reset Mode
-OpenCode tracks users by IP. When you hit the rate limit:
-1. **Stops** the current WARP tunnel
-2. **Clears** cached session data
-3. **Creates** a new tunnel registration (new IP)
-4. **Restarts** WARP with a fresh IP
+The Linux release is built on Ubuntu 22.04 for compatibility with older glibc versions. Releases are published from version tags.
 
-#### Proxy Bridge Mode
-Claude Code → oplire proxy (127.0.0.1:8080) → OpenCode Zen
-- Translates Anthropic API format to OpenAI format
-- Streams SSE responses in real-time
-- Exposes free models via `/v1/models` endpoint
-- **Auto-resets WARP** on 429 rate limits — transparently
+<details>
+<summary>Build from source</summary>
 
-## Installation
+Install [rustup](https://rustup.rs), a native C toolchain, and CMake. The project uses Rust edition 2024 and supports Rust 1.88 or newer. The checkout selects the pinned stable compiler used in CI.
 
-### Linux (AUR)
-```bash
-yay -S oplire
-```
-
-### Windows (winget)
-```powershell
-winget install BerkeOruc.oplire
-```
-
-### macOS
-```bash
-brew install berkeoruc/oplire/oplire
-```
-
-### From Source
-```bash
+```sh
 git clone https://github.com/BerkeOruc/oplire.git
 cd oplire
-cargo build --release
-sudo cp target/release/oplire /usr/bin/oplire
+cargo install --locked --path .
 ```
 
-## Usage
+</details>
 
-### Quick Start — Claude Code + Proxy
-```bash
-# One command: starts proxy + launches Claude Code with correct env vars
-oplire connect claude-code
+## Quick start
 
-# With specific model
-oplire connect claude-code --model glm-4.7-free
+Start an inference API you are authorized to use. It must serve `POST /v1/chat/completions`; model discovery also needs `GET /v1/models`. Set `--upstream` to the API root **before** `/v1`.
 
-# With custom upstream
-oplire connect claude-code --upstream http://my-opencode-server:3000
+```sh
+oplire proxy --upstream http://127.0.0.1:3000
 ```
 
-### WARP Reset Commands
-```bash
-oplire reset          # Full WARP tunnel reset
-oplire quick-reset    # Fast IP rotation (no service restart)
-oplire status         # Check WARP connection status
-oplire stop           # Stop WARP tunnel
-oplire install        # Install Cloudflare WARP
+In another terminal, list the available models and replace `your-model-id` with an ID from the list:
+
+```sh
+curl --fail-with-body http://127.0.0.1:8080/v1/models
+curl --fail-with-body http://127.0.0.1:8080/v1/messages \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"your-model-id","max_tokens":32,"messages":[{"role":"user","content":"Say hello."}]}'
 ```
 
-### Proxy Commands
-```bash
-oplire proxy                          # Start reverse proxy on :8080
-oplire proxy --listen 0.0.0.0:9000    # Custom listen address
-oplire daemon                         # Background daemon mode
-oplire watch                          # Monitor OpenCode, auto-reset on 429
-```
+See the [bridge guide](docs/bridge.md) for upstream authentication, endpoint details, and troubleshooting.
 
-### Configuration
-```bash
-oplire config show    # Show current settings
-oplire config set     # Save configuration
-oplire config reset   # Reset to defaults
-```
+> [!IMPORTANT]
+> The bridge listens only on loopback and does not authenticate local clients. For Claude Code, choose an upstream model with streaming and function calling. See the [launcher guide](docs/bridge.md#claude-code-launcher) for limitations.
 
-### Diagnostics
-```bash
-oplire doctor         # Check WARP, Claude Code, OpenCode setup
-oplire about          # Show version and info
-```
+## OpenCode V2
 
-## Claude Code Integration
+With [Bun](https://bun.sh/) on your `PATH`, run `oplire install opencode` or install the CLI directly with `bun install -g --trust @opencode/cli`. See the [V1 migration guide](https://opencode.ai/docs/migrate-v1) if you are upgrading.
 
-### Method 1: One-liner (Recommended)
-```bash
-oplire connect claude-code
-```
+Use `/models` in OpenCode to see the current free chat models. The [Console catalog](https://opencode.ai/docs/console/models#free-models) lists availability and data policies. Those models require OpenCode and cannot be used through the bridge. `opencode serve` exposes the OpenCode application API, which is incompatible with the bridge. For eligible paid or Go models in Claude Code, see the [official Console setup](https://opencode.ai/docs/console/harnesses/claude-code).
 
-### Method 2: Manual Environment
-```bash
-# Start proxy in background
-oplire daemon &
+## Cloudflare WARP
 
-# Set environment and launch Claude Code
-export ANTHROPIC_BASE_URL=http://127.0.0.1:8080
-export ANTHROPIC_API_KEY=oplire-proxy-key
-claude
-```
+WARP is optional. `oplire warp status`, `oplire warp connect`, and `oplire warp disconnect` use the client you already installed and set up.
 
-### Method 3: Claude Code Settings
-```bash
-claude
-> /config
-# Set API Base URL: http://127.0.0.1:8080
-# Set API Key: oplire-proxy-key
-```
-
-## Available Free Models
-
-When connected through the proxy, these models appear in Claude Code's `/models` list:
-
-| Model | ID |
-|-------|-----|
-| GLM 4.7 Free | `glm-4.7-free` |
-| MiniMax M2.1 Free | `minimax-m2.1-free` |
-| Kimi K2.5 Free | `kimi-k2.5-free` |
-| Qwen 2.5 72B Free | `qwen-2.5-72b-free` |
-| Llama 3.3 70B Free | `llama-3.3-70b-free` |
-
-## Options
-
-- `--verbose` - Detailed output
-- `--dry-run` - Preview changes without executing
-- `--json` - JSON output (status command)
-
-## About
-
-```
-Version: 2.1.0
-Language: Rust
-Purpose: OpenCode rate limit reset + Anthropic proxy
-Infrastructure: Cloudflare WARP + Axum HTTP
-Author: Berke Oruc
-GitHub: https://github.com/BerkeOruc/oplire
-```
+See [WARP setup and troubleshooting](docs/warp.md) or [what changed in 3.0](docs/migration.md).
 
 ## License
 
-MIT License. See [LICENSE](LICENSE) for details.
-
----
-
-Made by [Berke Oruc](https://github.com/BerkeOruc)
+[MIT](LICENSE). Created by [Berke Oruc](https://github.com/BerkeOruc).
