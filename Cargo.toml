@@ -1,9 +1,9 @@
 [package]
 name = "oplire-reset"
 version = "3.0.0"
-edition = "2021"
+edition = "2024"
 rust-version = "1.88"
-description = "OpenCode Limit Reset + Anthropic Proxy Bridge"
+description = "Anthropic Messages bridge with optional Cloudflare WARP controls"
 authors = ["Berke Oruc"]
 license = "MIT"
 repository = "https://github.com/berkeoruc/oplire"

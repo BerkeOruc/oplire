@@ -1,51 +1,50 @@
 use axum::{
+    Json,
     body::Body,
     extract::State,
-    http::{header::RETRY_AFTER, HeaderMap, HeaderValue, StatusCode},
+    http::{HeaderValue, StatusCode, header::RETRY_AFTER},
     response::{IntoResponse, Response},
-    Json,
 };
 use bytes::Bytes;
 use futures_util::StreamExt;
 use reqwest::Client;
 use serde_json::Value;
 use std::sync::Arc;
-use tokio::sync::Mutex;
-use tracing::{error, info, warn};
+use tracing::warn;
 
 use crate::config::ProxyConfig;
-use crate::proxy::server::build_client;
-use crate::transform::{anthropic_to_opencode_request, opencode_stream_to_anthropic, opencode_response_to_anthropic};
-use crate::warp::WarpResolver;
+use crate::transform::{
+    anthropic_to_opencode_request, opencode_response_to_anthropic, opencode_stream_to_anthropic,
+};
 
 pub struct ProxyState {
     pub config: ProxyConfig,
     pub client: Client,
-    pub warp_resolver: WarpResolver,
 }
 
-pub async fn handle_models(State(state): State<Arc<Mutex<ProxyState>>>) -> Response {
-    let state_guard = state.lock().await;
-    let base_url = state_guard.config.opencode_base_url.clone();
-    let api_key = state_guard.config.opencode_api_key.clone();
-    let client = state_guard.client.clone();
-    drop(state_guard);
+pub async fn handle_models(State(state): State<Arc<ProxyState>>) -> Response {
+    let models_url = format!(
+        "{}/v1/models",
+        state.config.opencode_base_url.trim_end_matches('/')
+    );
 
-    let models_url = format!("{}/v1/models", base_url.trim_end_matches('/'));
-
-    let mut request = client
+    let mut request = state
+        .client
         .get(&models_url)
         .header("Accept", "application/json");
 
-    if let Some(key) = &api_key {
-        request = request.header("Authorization", format!("Bearer {}", key));
+    if let Some(key) = &state.config.opencode_api_key {
+        request = request.bearer_auth(key);
     }
 
     match request.send().await {
         Ok(resp) if resp.status().is_success() => match resp.json::<Value>().await {
             Ok(body) => match body.get("data").and_then(Value::as_array) {
                 Some(models) => Json(transform_models_to_anthropic(models)).into_response(),
-                None => (StatusCode::BAD_GATEWAY, "Upstream response has no model list")
+                None => (
+                    StatusCode::BAD_GATEWAY,
+                    "Upstream response has no model list",
+                )
                     .into_response(),
             },
             Err(e) => {
@@ -53,17 +52,8 @@ pub async fn handle_models(State(state): State<Arc<Mutex<ProxyState>>>) -> Respo
                 (StatusCode::BAD_GATEWAY, "Invalid upstream models response").into_response()
             }
         },
-        Ok(resp) => {
-            let mut response = (resp.status(), "Upstream model listing failed").into_response();
-            if let Some(retry_after) = resp.headers().get(RETRY_AFTER) {
-                response.headers_mut().insert(RETRY_AFTER, retry_after.clone());
-            }
-            response
-        }
-        Err(e) => {
-            warn!("Failed to fetch models from upstream: {}", e);
-            (StatusCode::BAD_GATEWAY, "Could not reach upstream model endpoint").into_response()
-        }
+        Ok(resp) => upstream_error(&resp, "Upstream model listing failed"),
+        Err(e) => upstream_transport_error(e),
     }
 }
 
@@ -108,7 +98,11 @@ fn transform_models_to_anthropic(upstream: &[Value]) -> Value {
                 model.insert("context_window".into(), Value::from(window));
             }
             for key in [
-                "created", "owned_by", "architecture", "input_price", "output_price",
+                "created",
+                "owned_by",
+                "architecture",
+                "input_price",
+                "output_price",
             ] {
                 if let Some(value) = m.get(key) {
                     model.insert(key.into(), value.clone());
@@ -128,19 +122,13 @@ fn transform_models_to_anthropic(upstream: &[Value]) -> Value {
 }
 
 pub async fn handle_model_detail(
-    State(state): State<Arc<Mutex<ProxyState>>>,
+    State(state): State<Arc<ProxyState>>,
     axum::extract::Path(model_id): axum::extract::Path<String>,
 ) -> impl IntoResponse {
-    let state_guard = state.lock().await;
-    let base_url = state_guard.config.opencode_base_url.clone();
-    let api_key = state_guard.config.opencode_api_key.clone();
-    let client = state_guard.client.clone();
-    drop(state_guard);
-
     if matches!(model_id.as_str(), "" | "." | "..") {
         return StatusCode::BAD_REQUEST.into_response();
     }
-    let Ok(mut model_url) = url::Url::parse(&base_url) else {
+    let Ok(mut model_url) = url::Url::parse(&state.config.opencode_base_url) else {
         return StatusCode::BAD_GATEWAY.into_response();
     };
     model_url.set_query(None);
@@ -152,50 +140,45 @@ pub async fn handle_model_detail(
         Err(_) => return StatusCode::BAD_GATEWAY.into_response(),
     }
 
-    let mut request = client
+    let mut request = state
+        .client
         .get(model_url)
         .header("Accept", "application/json");
 
-    if let Some(key) = &api_key {
-        request = request.header("Authorization", format!("Bearer {}", key));
+    if let Some(key) = &state.config.opencode_api_key {
+        request = request.bearer_auth(key);
     }
 
     match request.send().await {
-        Ok(resp) if resp.status().is_success() => {
-            match resp.json::<Value>().await {
-                Ok(model) => {
-                    let mut transformed = serde_json::Map::new();
-                    if let Some(id) = model.get("id").and_then(|v| v.as_str()) {
-                        transformed.insert("id".to_string(), Value::String(id.to_string()));
-                    }
-                    if let Some(name) = model.get("name").and_then(|v| v.as_str()) {
-                        transformed.insert("name".to_string(), Value::String(name.to_string()));
-                        transformed.insert("display_name".to_string(), Value::String(name.to_string()));
-                    }
-                    transformed.insert("type".to_string(), Value::String("model".to_string()));
+        Ok(resp) if resp.status().is_success() => match resp.json::<Value>().await {
+            Ok(model) => {
+                let mut transformed = serde_json::Map::new();
+                if let Some(id) = model.get("id").and_then(|v| v.as_str()) {
+                    transformed.insert("id".to_string(), Value::String(id.to_string()));
+                }
+                if let Some(name) = model.get("name").and_then(|v| v.as_str()) {
+                    transformed.insert("name".to_string(), Value::String(name.to_string()));
+                    transformed.insert("display_name".to_string(), Value::String(name.to_string()));
+                }
+                transformed.insert("type".to_string(), Value::String("model".to_string()));
 
-                    (StatusCode::OK, Json(Value::Object(transformed))).into_response()
-                }
-                Err(e) => {
-                    error!("Failed to parse model detail: {}", e);
-                    StatusCode::NOT_FOUND.into_response()
-                }
+                (StatusCode::OK, Json(Value::Object(transformed))).into_response()
             }
-        }
-        _ => StatusCode::NOT_FOUND.into_response(),
+            Err(e) => {
+                warn!("Failed to parse model detail: {}", e);
+                StatusCode::BAD_GATEWAY.into_response()
+            }
+        },
+        Ok(resp) => upstream_error(&resp, "Upstream model lookup failed"),
+        Err(e) => upstream_transport_error(e),
     }
 }
 
-pub async fn handle_messages(
-    State(state): State<Arc<Mutex<ProxyState>>>,
-    _headers: HeaderMap,
-    body: Bytes,
-) -> Response {
+pub async fn handle_messages(State(state): State<Arc<ProxyState>>, body: Bytes) -> Response {
     let request_body = match serde_json::from_slice::<Value>(&body) {
         Ok(v) => v,
         Err(e) => {
-            error!("Failed to parse request body: {}", e);
-            return error_response(&format!("Invalid JSON: {}", e));
+            return error_response(StatusCode::BAD_REQUEST, &format!("Invalid JSON: {e}"));
         }
     };
 
@@ -207,119 +190,89 @@ pub async fn handle_messages(
     let model = request_body
         .get("model")
         .and_then(|v| v.as_str())
-        .unwrap_or("unknown")
-        .to_string();
-
-    let opencode_body = anthropic_to_opencode_request(&request_body);
-
-    let state_guard = state.lock().await;
-    let base_url = state_guard.config.opencode_base_url.clone();
-    let api_key = state_guard.config.opencode_api_key.clone();
-    let max_retries = state_guard.config.max_retries;
-    let reset_delay = state_guard.config.warp_reset_delay_ms;
-    let mut client = state_guard.client.clone();
-    drop(state_guard);
-
-    let mut retry_count = 0;
-
-    loop {
-        let result = if is_stream {
-            forward_streaming(&base_url, &api_key, &opencode_body, &model, &client).await
-        } else {
-            forward_non_streaming(&base_url, &api_key, &opencode_body, &model, &client).await
-        };
-
-        match result {
-            Ok(response) => return response,
-            Err(ProxyError::RateLimited) => {
-                retry_count += 1;
-                if retry_count > max_retries {
-                    return error_response("Rate limit exceeded after WARP resets");
-                }
-
-                info!(
-                    "429 received, attempting WARP reset (attempt {}/{})",
-                    retry_count, max_retries
-                );
-
-                let resolver = WarpResolver::new(max_retries, reset_delay);
-                if !resolver.handle_429(retry_count - 1).await {
-                    return error_response("WARP reset failed, rate limit still active");
-                }
-                if let Ok(fresh) = build_client() {
-                    state.lock().await.client = fresh.clone();
-                    client = fresh;
-                    info!("Rebuilt HTTP client pool after WARP reset");
-                }
-            }
-            Err(ProxyError::RequestFailed(msg)) => {
-                error!("Upstream request failed: {}", msg);
-                return error_response(&format!("Upstream error: {}", msg));
-            }
+        .unwrap_or("unknown");
+    let url = format!(
+        "{}/v1/chat/completions",
+        state.config.opencode_base_url.trim_end_matches('/')
+    );
+    let mut request = state
+        .client
+        .post(&url)
+        .json(&anthropic_to_opencode_request(&request_body));
+    if is_stream {
+        request = request.header("Accept", "text/event-stream");
+    }
+    if let Some(key) = &state.config.opencode_api_key {
+        request = request.bearer_auth(key);
+    }
+    match request.send().await {
+        Ok(resp) if !resp.status().is_success() => {
+            let mut resp = resp;
+            let detail = match resp.status() {
+                StatusCode::BAD_REQUEST
+                | StatusCode::NOT_FOUND
+                | StatusCode::UNPROCESSABLE_ENTITY => upstream_validation_message(&mut resp).await,
+                _ => None,
+            };
+            upstream_error(
+                &resp,
+                detail
+                    .as_deref()
+                    .unwrap_or("Upstream inference request failed"),
+            )
         }
+        Ok(resp) if is_stream => forward_streaming(resp, model),
+        Ok(resp) => match resp.json::<Value>().await {
+            Ok(body) => {
+                let mut response =
+                    Json(opencode_response_to_anthropic(&body, model)).into_response();
+                let millis = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |duration| duration.as_millis());
+                if let Ok(id) = HeaderValue::from_str(&format!("req_{millis}")) {
+                    response.headers_mut().insert("x-request-id", id);
+                }
+                response
+            }
+            Err(e) => upstream_transport_error(e),
+        },
+        Err(e) => upstream_transport_error(e),
     }
 }
 
-async fn forward_streaming(
-    base_url: &str,
-    api_key: &Option<String>,
-    body: &Value,
-    model: &str,
-    client: &Client,
-) -> Result<Response, ProxyError> {
-    let url = format!("{}/v1/chat/completions", base_url.trim_end_matches('/'));
-
-    let mut request = client
-        .post(&url)
-        .header("Content-Type", "application/json")
-        .header("Accept", "text/event-stream")
-        .json(body);
-
-    if let Some(key) = api_key {
-        request = request.header("Authorization", format!("Bearer {}", key));
+async fn upstream_validation_message(upstream: &mut reqwest::Response) -> Option<String> {
+    const MAX_ERROR_BYTES: usize = 8 * 1024;
+    let mut body = Vec::new();
+    while let Some(chunk) = upstream.chunk().await.ok()? {
+        if chunk.len() > MAX_ERROR_BYTES - body.len() {
+            return None;
+        }
+        body.extend_from_slice(&chunk);
     }
+    let error: Value = serde_json::from_slice(&body).ok()?;
+    let message = error.get("error")?.get("message")?.as_str()?.trim();
+    (!message.is_empty()).then(|| message.to_owned())
+}
 
-    let response = request
-        .send()
-        .await
-        .map_err(|e| ProxyError::RequestFailed(e.to_string()))?;
-
-    if response.status() == 429 {
-        return Err(ProxyError::RateLimited);
-    }
-
-    if !response.status().is_success() {
-        let status = response.status();
-        let body = response
-            .text()
-            .await
-            .unwrap_or_else(|_| "Unknown error".to_string());
-        return Err(ProxyError::RequestFailed(format!(
-            "Upstream {} : {}",
-            status, body
-        )));
-    }
-
+fn forward_streaming(response: reqwest::Response, model: &str) -> Response {
     let model_owned = model.to_string();
-    let stream = response
-        .bytes_stream()
-        .map(move |chunk| {
-            let chunk = chunk.map_err(std::io::Error::other)?;
-            let lines = String::from_utf8_lossy(&chunk);
-            let mut output = String::new();
+    let stream = response.bytes_stream().map(move |chunk| {
+        let chunk = chunk.map_err(std::io::Error::other)?;
+        let lines = String::from_utf8_lossy(&chunk);
+        let mut output = String::new();
 
-            for line in lines.lines() {
-                if let Some(transformed) = opencode_stream_to_anthropic(line, &model_owned) {
-                    output.push_str(&transformed);
-                }
+        for line in lines.lines() {
+            if let Some(transformed) = opencode_stream_to_anthropic(line, &model_owned) {
+                output.push_str(&transformed);
             }
+        }
 
-            if output.is_empty() {
-                Ok::<Bytes, std::io::Error>(Bytes::from(lines.into_owned()))
-            } else {
-                Ok::<Bytes, std::io::Error>(Bytes::from(output))
-            }
-        });
+        if output.is_empty() {
+            Ok::<Bytes, std::io::Error>(Bytes::from(lines.into_owned()))
+        } else {
+            Ok::<Bytes, std::io::Error>(Bytes::from(output))
+        }
+    });
 
     let body = Body::from_stream(stream);
 
@@ -329,10 +282,9 @@ async fn forward_streaming(
         "Content-Type",
         HeaderValue::from_static("text/event-stream; charset=utf-8"),
     );
-    response.headers_mut().insert(
-        "Cache-Control",
-        HeaderValue::from_static("no-cache"),
-    );
+    response
+        .headers_mut()
+        .insert("Cache-Control", HeaderValue::from_static("no-cache"));
     response
         .headers_mut()
         .insert("Connection", HeaderValue::from_static("keep-alive"));
@@ -340,85 +292,46 @@ async fn forward_streaming(
         .headers_mut()
         .insert("X-Accel-Buffering", HeaderValue::from_static("no"));
 
-    Ok(response)
+    response
 }
 
-async fn forward_non_streaming(
-    base_url: &str,
-    api_key: &Option<String>,
-    body: &Value,
-    model: &str,
-    client: &Client,
-) -> Result<Response, ProxyError> {
-    let url = format!("{}/v1/chat/completions", base_url.trim_end_matches('/'));
-
-    let mut request = client
-        .post(&url)
-        .header("Content-Type", "application/json")
-        .json(body);
-
-    if let Some(key) = api_key {
-        request = request.header("Authorization", format!("Bearer {}", key));
-    }
-
-    let response = request
-        .send()
-        .await
-        .map_err(|e| ProxyError::RequestFailed(e.to_string()))?;
-
-    if response.status() == 429 {
-        return Err(ProxyError::RateLimited);
-    }
-
-    if !response.status().is_success() {
-        let status = response.status();
-        let body = response
-            .text()
-            .await
-            .unwrap_or_else(|_| "Unknown error".to_string());
-        return Err(ProxyError::RequestFailed(format!(
-            "Upstream {} : {}",
-            status, body
-        )));
-    }
-
-    let opencode_response = response
-        .json::<Value>()
-        .await
-        .map_err(|e| ProxyError::RequestFailed(e.to_string()))?;
-
-    let anthropic_response = opencode_response_to_anthropic(&opencode_response, model);
-
-    let mut headers = HeaderMap::new();
-    headers.insert(
-        "Content-Type",
-        HeaderValue::from_static("application/json"),
-    );
-    headers.insert(
-        "x-request-id",
-        HeaderValue::from_str(&format!("req_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0))).unwrap_or(HeaderValue::from_static("unknown")),
-    );
-
-    Ok((StatusCode::OK, headers, Json(anthropic_response)).into_response())
-}
-
-fn error_response(message: &str) -> Response {
+fn error_response(status: StatusCode, message: &str) -> Response {
+    let error_type = match status {
+        StatusCode::BAD_REQUEST | StatusCode::UNPROCESSABLE_ENTITY => "invalid_request_error",
+        StatusCode::UNAUTHORIZED => "authentication_error",
+        StatusCode::FORBIDDEN => "permission_error",
+        StatusCode::NOT_FOUND => "not_found_error",
+        StatusCode::TOO_MANY_REQUESTS => "rate_limit_error",
+        _ => "api_error",
+    };
     let body = serde_json::json!({
+        "type": "error",
         "error": {
             "message": message,
-            "type": "api_error",
-            "code": "internal_error"
+            "type": error_type,
         }
     });
-    (
-        StatusCode::INTERNAL_SERVER_ERROR,
-        Json(body),
-    )
-        .into_response()
+    (status, Json(body)).into_response()
 }
 
-#[derive(Debug)]
-enum ProxyError {
-    RateLimited,
-    RequestFailed(String),
+fn upstream_error(upstream: &reqwest::Response, message: &str) -> Response {
+    let status = upstream.status();
+    if !status.is_client_error() && !status.is_server_error() {
+        return error_response(StatusCode::BAD_GATEWAY, "Unexpected upstream status");
+    }
+    let mut response = error_response(status, message);
+    if let Some(value) = upstream.headers().get(RETRY_AFTER) {
+        response.headers_mut().insert(RETRY_AFTER, value.clone());
+    }
+    response
+}
+
+fn upstream_transport_error(error: reqwest::Error) -> Response {
+    let timed_out = error.is_timeout();
+    warn!("Upstream request failed: {}", error.without_url());
+    if timed_out {
+        error_response(StatusCode::GATEWAY_TIMEOUT, "Upstream request timed out")
+    } else {
+        error_response(StatusCode::BAD_GATEWAY, "Upstream request failed")
+    }
 }

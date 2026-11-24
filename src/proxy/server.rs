@@ -1,16 +1,15 @@
 use axum::{
+    Router,
     middleware::{self, Next},
     routing::{get, post},
-    Router,
 };
 use std::net::SocketAddr;
 use std::sync::Arc;
-use tokio::sync::Mutex;
 use tracing::info;
+use url::{Host, Url};
 
 use crate::config::ProxyConfig;
-use crate::proxy::handlers::{handle_messages, handle_model_detail, handle_models, ProxyState};
-use crate::warp::WarpResolver;
+use crate::proxy::handlers::{ProxyState, handle_messages, handle_model_detail, handle_models};
 
 async fn log_requests(
     request: axum::http::Request<axum::body::Body>,
@@ -24,23 +23,32 @@ async fn log_requests(
     response
 }
 
-pub fn build_client() -> reqwest::Result<reqwest::Client> {
-    reqwest::Client::builder()
+fn is_loopback(url: &Url) -> bool {
+    match url.host() {
+        Some(Host::Domain(host)) => host.trim_end_matches('.').eq_ignore_ascii_case("localhost"),
+        Some(Host::Ipv4(ip)) => ip.is_loopback(),
+        Some(Host::Ipv6(ip)) => ip.is_loopback(),
+        None => false,
+    }
+}
+
+fn build_client(upstream: &str) -> reqwest::Result<reqwest::Client> {
+    let mut builder = reqwest::Client::builder()
         .connect_timeout(std::time::Duration::from_secs(10))
-        .read_timeout(std::time::Duration::from_secs(300))
-        .build()
+        .read_timeout(std::time::Duration::from_secs(300));
+    if Url::parse(upstream).is_ok_and(|url| is_loopback(&url)) {
+        builder = builder.no_proxy();
+    }
+    builder.build()
 }
 
 fn router(config: &ProxyConfig) -> reqwest::Result<Router> {
-    let client = build_client()?;
+    let client = build_client(&config.opencode_base_url)?;
 
-    let warp_resolver = WarpResolver::new(config.max_retries, config.warp_reset_delay_ms);
-
-    let state = Arc::new(Mutex::new(ProxyState {
+    let state = Arc::new(ProxyState {
         config: config.clone(),
         client,
-        warp_resolver,
-    }));
+    });
 
     Ok(Router::new()
         .route("/v1/models", get(handle_models))
@@ -74,13 +82,28 @@ pub async fn start_proxy_server(config: ProxyConfig) -> anyhow::Result<()> {
 mod tests {
     use super::*;
     use axum::{
-        extract::Path,
-        http::{header::RETRY_AFTER, StatusCode},
-        response::Html,
         Json,
+        extract::Path,
+        http::{StatusCode, header::RETRY_AFTER},
+        response::Html,
     };
-    use serde_json::{json, Value};
+    use serde_json::{Value, json};
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use tokio::net::TcpListener;
+
+    #[test]
+    fn only_loopback_upstreams_bypass_the_system_proxy() {
+        for host in ["localhost", "localhost.", "127.0.0.1", "[::1]"] {
+            assert!(is_loopback(
+                &Url::parse(&format!("http://{host}:3000")).unwrap()
+            ));
+        }
+        for host in ["localhost.example.com", "192.168.0.1", "[::2]"] {
+            assert!(!is_loopback(
+                &Url::parse(&format!("http://{host}:3000")).unwrap()
+            ));
+        }
+    }
 
     async fn serve(app: Router) -> String {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -189,5 +212,100 @@ mod tests {
                 assert_eq!(response.headers()[RETRY_AFTER], "60");
             }
         }
+    }
+
+    #[tokio::test]
+    async fn inference_rate_limits_are_returned_without_retries() {
+        const RETRY_DATE: &str = "Tue, 24 Nov 2026 12:00:00 GMT";
+        let calls = Arc::new(AtomicUsize::new(0));
+        let upstream = serve(Router::new().route(
+            "/v1/chat/completions",
+            post({
+                let calls = Arc::clone(&calls);
+                move |Json(body): Json<Value>| async move {
+                    calls.fetch_add(1, Ordering::Relaxed);
+                    let retry_after = if body["stream"] == true {
+                        RETRY_DATE
+                    } else {
+                        "60"
+                    };
+                    (StatusCode::TOO_MANY_REQUESTS, [(RETRY_AFTER, retry_after)])
+                }
+            }),
+        ))
+        .await;
+        let proxy = serve(
+            router(&ProxyConfig {
+                opencode_base_url: upstream,
+                ..ProxyConfig::default()
+            })
+            .unwrap(),
+        )
+        .await;
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .timeout(std::time::Duration::from_secs(5))
+            .build()
+            .unwrap();
+
+        for (index, stream) in [false, true].into_iter().enumerate() {
+            let response = client
+                .post(format!("{proxy}/v1/messages"))
+                .json(&json!({
+                    "model": "demo/model",
+                    "max_tokens": 16,
+                    "messages": [{"role": "user", "content": "ping"}],
+                    "stream": stream,
+                }))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+            assert_eq!(
+                response.headers()[RETRY_AFTER],
+                if stream { RETRY_DATE } else { "60" }
+            );
+            let body: Value = response.json().await.unwrap();
+            assert_eq!(body["type"], "error");
+            assert_eq!(body["error"]["type"], "rate_limit_error");
+            assert_eq!(calls.load(Ordering::Relaxed), index + 1);
+        }
+    }
+
+    #[tokio::test]
+    async fn inference_preserves_structured_provider_validation_messages() {
+        let upstream = serve(Router::new().route(
+            "/v1/chat/completions",
+            post(|| async {
+                (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({"error": {"message": "Unknown model: demo/model"}})),
+                )
+            }),
+        ))
+        .await;
+        let proxy = serve(
+            router(&ProxyConfig {
+                opencode_base_url: upstream,
+                ..ProxyConfig::default()
+            })
+            .unwrap(),
+        )
+        .await;
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .timeout(std::time::Duration::from_secs(5))
+            .build()
+            .unwrap();
+        let response = client
+            .post(format!("{proxy}/v1/messages"))
+            .json(&json!({"model": "demo/model", "messages": []}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body: Value = response.json().await.unwrap();
+        assert_eq!(body["error"]["type"], "invalid_request_error");
+        assert_eq!(body["error"]["message"], "Unknown model: demo/model");
     }
 }

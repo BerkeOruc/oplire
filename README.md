@@ -1,6 +1,6 @@
 # oplire
 
-oplire manages Cloudflare WARP and translates Anthropic Messages requests to OpenAI Chat Completions for compatible upstreams.
+oplire translates Anthropic Messages requests to OpenAI Chat Completions for compatible upstreams. It also offers optional Cloudflare WARP controls.
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](LICENSE)
 
@@ -37,14 +37,31 @@ oplire models --upstream http://127.0.0.1:3000
 oplire connect claude-code --upstream http://127.0.0.1:3000 --model your-model-id
 ```
 
-Both commands assume an inference API is already running at that address. The bridge's model list comes from the upstream and returns an error if the catalog is unavailable or invalid. Keep the default loopback listener: the bridge does not authenticate local clients. The bridge can change the host's WARP connection when an inference request is rate limited.
+Both commands assume an inference API is already running at that address. The bridge's model list comes from the upstream and returns an error if the catalog is unavailable or invalid. Keep the default loopback listener: the bridge does not authenticate local clients. The bridge connects to loopback upstreams directly.
+
+If the provider returns `429`, the bridge returns that status and any `Retry-After` header to the caller. It does not retry the request or change WARP settings.
+
+## Optional Cloudflare WARP
+
+Install and set up the official client for [Linux](https://developers.cloudflare.com/warp-client/get-started/linux/), [macOS](https://developers.cloudflare.com/warp-client/get-started/macos/), or [Windows](https://developers.cloudflare.com/warp-client/get-started/windows/). `oplire install warp` prints the setup link for your platform; it does not install software. Use the Cloudflare app if `warp-cli` is not on your `PATH`.
+
+```sh
+oplire warp status
+oplire warp status --json
+oplire warp connect
+oplire warp disconnect
+```
+
+These commands use the existing Cloudflare client. Connect and disconnect affect the host's WARP connection. oplire never changes client enrollment, tunnel mode, or system services. `status` reports the local client's state; it does not verify which route an inference request took. The bridge works without WARP, and loopback traffic stays local.
+
+### Upgrading from oplire 2.x
+
+- `reset`, `quick-reset`, `watch`, `--max-retries`, and `--warp-delay` have been removed.
+- `status` and `stop` still work as aliases for `warp status` and `warp disconnect`. The `stop` alias only disconnects WARP; it does not disable the service. Status JSON keeps `connected`, adds `state`, and omits the old `tunnel_id` field.
 
 ## Other commands
 
 ```sh
-oplire status              # Check WARP connection status
-oplire stop                # Stop the WARP tunnel
-oplire install warp        # Install Cloudflare WARP on supported Linux distributions
 oplire doctor              # Check the local tools and upstream model endpoint
 oplire --help              # List commands and options
 ```

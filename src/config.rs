@@ -7,10 +7,6 @@ pub struct ProxyConfig {
     pub opencode_base_url: String,
     /// API key for the upstream (if required)
     pub opencode_api_key: Option<String>,
-    /// Maximum retry attempts after WARP reset
-    pub max_retries: u32,
-    /// Delay between WARP reset steps (milliseconds)
-    pub warp_reset_delay_ms: u64,
 }
 
 impl Default for ProxyConfig {
@@ -19,18 +15,15 @@ impl Default for ProxyConfig {
             listen_addr: "127.0.0.1:8080".to_string(),
             opencode_base_url: "http://localhost:3000".to_string(),
             opencode_api_key: None,
-            max_retries: 3,
-            warp_reset_delay_ms: 5000,
         }
     }
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct AppConfig {
     pub listen: String,
     pub upstream: String,
-    pub max_retries: u32,
-    pub warp_delay: u64,
 }
 
 impl Default for AppConfig {
@@ -38,8 +31,21 @@ impl Default for AppConfig {
         Self {
             listen: "127.0.0.1:8080".to_string(),
             upstream: "http://localhost:3000".to_string(),
-            max_retries: 3,
-            warp_delay: 5000,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reads_old_configs_with_warp_settings() {
+        let config: AppConfig = serde_json::from_str(
+            r#"{"upstream":"http://localhost:9000","max_retries":3,"warp_delay":5000}"#,
+        )
+        .unwrap();
+        assert_eq!(config.upstream, "http://localhost:9000");
+        assert_eq!(config.listen, AppConfig::default().listen);
     }
 }
