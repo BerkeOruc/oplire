@@ -38,7 +38,7 @@ Set `UPSTREAM_API_KEY` in your shell before running this example. The bridge sen
 ## What translates
 
 - Text, system messages, and streamed text replies. The bridge maps upstream token usage when available. Chat Completions does not identify which stop sequence matched, so `stop_sequence` is always `null`.
-- Client-defined functions, tool choice, parallel calls, and tool results. The bridge waits for a complete, valid set of streamed tool arguments before returning the calls. The client, not oplire, decides whether to execute a tool.
+- Client-defined functions, tool choice, parallel calls, and tool results. The upstream must include a tool call `index` in each streamed tool delta. The bridge waits for a complete, valid set of arguments before returning the calls. The client, not oplire, decides whether to execute a tool.
 - Images from base64 data or an HTTP(S) URL, plain-text documents, and base64 PDFs. The upstream model must accept image and PDF inputs. The bridge does not fetch URLs. Attachments in tool results move to a user message after the tool replies because Chat Completions tool messages carry only text.
 
 The bridge does not implement Anthropic server tools, server-side MCP, file IDs, document citations, extended thinking, safeguards, or structured output. It drops thinking blocks from replayed history rather than forwarding or signing them. Anthropic caching markers and effort settings are not translated. There is no `/v1/messages/count_tokens` endpoint; Claude Code estimates counts when it is absent.
@@ -52,6 +52,8 @@ oplire connect claude-code --upstream http://127.0.0.1:3000 --model your-model-i
 ```
 
 Pass `--api-key` if the upstream requires it. Choose a model that supports function calling and streaming. Omit `--model` to pick from the upstream catalog interactively. The launcher uses a local placeholder credential and tells Claude Code to omit its extended thinking request parameter and most experimental beta features by default. Claude Code settings can override launcher environment variables. Check for saved provider, URL, or model overrides if Claude Code does not use the bridge.
+
+The bridge does not replay provider-specific reasoning data. If your provider requires it to continue tool calls, as [DeepSeek does in thinking mode](https://api-docs.deepseek.com/guides/thinking_mode#tool-calls), choose a model or upstream configuration that runs without thinking.
 
 This is a best-effort integration. [Anthropic does not support routing Claude Code to non-Claude models](https://code.claude.com/docs/en/llm-gateway). Use normal client tool permissions with an upstream you trust. The bridge does not support Claude Code features that require Anthropic server-side safeguards. For eligible paid or Go models from OpenCode Console, use the [official Claude Code setup](https://opencode.ai/docs/console/harnesses/claude-code).
 

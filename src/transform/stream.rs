@@ -334,8 +334,8 @@ impl MessageStream {
                     .name
                     .as_deref()
                     .ok_or("Upstream tool call has no name")?;
-                tool_input(&tool.arguments)?;
-                Ok((id, name, &tool.arguments))
+                let (arguments, _) = tool_input(&tool.arguments)?;
+                Ok((id, name, arguments))
             })
             .collect::<Result<Vec<_>, _>>()?;
 
@@ -507,6 +507,23 @@ mod tests {
         assert_eq!(done[6], json!({"type":"content_block_stop","index":2}));
         assert_eq!(done[7]["delta"]["stop_reason"], "tool_use");
         assert_eq!(done[8]["type"], "message_stop");
+    }
+
+    #[test]
+    fn emits_an_empty_object_for_blank_tool_arguments() {
+        for arguments in ["", " \t\n"] {
+            let mut stream = MessageStream::new("fixture-model");
+            let payload = chunk(
+                json!({"tool_calls": [{"index": 0, "id": "call_date", "type": "function",
+                    "function": {"name": "get_date", "arguments": arguments}}]}),
+                Some("tool_calls"),
+            );
+            stream.push(payload.as_bytes());
+            let done = events(&stream.push(b"data: [DONE]\n\n"));
+            assert_eq!(done[0]["content_block"]["input"], json!({}));
+            assert_eq!(done[1]["delta"]["partial_json"], "{}");
+            assert_eq!(done[3]["delta"]["stop_reason"], "tool_use");
+        }
     }
 
     #[test]

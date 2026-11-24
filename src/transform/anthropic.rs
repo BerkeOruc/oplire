@@ -338,10 +338,16 @@ pub(super) fn tool_name(name: &Value) -> Result<&str, &'static str> {
         .ok_or("Function names must be 1 to 64 letters, digits, underscores, or hyphens")
 }
 
-pub(super) fn tool_input(arguments: &str) -> Result<Value, &'static str> {
+pub(super) fn tool_input(arguments: &str) -> Result<(&str, Value), &'static str> {
+    let arguments = if arguments.trim().is_empty() {
+        "{}"
+    } else {
+        arguments
+    };
     serde_json::from_str::<Value>(arguments)
         .ok()
         .filter(Value::is_object)
+        .map(|input| (arguments, input))
         .ok_or("Upstream tool arguments are not a valid JSON object")
 }
 
@@ -385,7 +391,8 @@ pub fn opencode_response_to_anthropic(body: &Value, model: &str) -> Result<Value
             let arguments = call["function"]["arguments"]
                 .as_str()
                 .ok_or("Upstream tool call has no arguments")?;
-            content.push(tool_use(id, name, &tool_input(arguments)?));
+            let (_, input) = tool_input(arguments)?;
+            content.push(tool_use(id, name, &input));
         }
     }
     let finish_reason = stop_reason(
@@ -511,6 +518,23 @@ mod tests {
         );
         assert_eq!(messages[2]["content"][2]["text"], "Review notes");
         assert_eq!(messages[2]["content"][3]["text"], "Notes\nhello");
+    }
+
+    #[test]
+    fn translates_blank_tool_arguments_as_an_empty_object() {
+        for arguments in ["", " \t\n"] {
+            let response = opencode_response_to_anthropic(
+                &json!({"choices": [{"finish_reason": "tool_calls", "message": {
+                    "tool_calls": [{"id": "call_date", "type": "function", "function": {
+                        "name": "get_date", "arguments": arguments
+                    }}]
+                }}]}),
+                "fixture-model",
+            )
+            .unwrap();
+            assert_eq!(response["content"][0]["input"], json!({}));
+            assert_eq!(response["stop_reason"], "tool_use");
+        }
     }
 
     #[test]

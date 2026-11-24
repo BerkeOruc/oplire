@@ -707,6 +707,7 @@ fn main() {
                 "CLAUDE_CODE_USE_FOUNDRY",
                 "CLAUDE_CODE_USE_MANTLE",
                 "CLAUDE_CODE_USE_ANTHROPIC_AWS",
+                "CLAUDE_CODE_USE_ANTHROPIC_GOOGLE_CLOUD",
             ] {
                 cmd.env_remove(name);
             }
